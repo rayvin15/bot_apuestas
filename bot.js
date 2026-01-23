@@ -103,3 +103,9 @@ async function mostrarCuotas(chatId, fixtureId) {
         bot.sendMessage(chatId, "Error al obtener cuotas. ❌");
     }
 }
+const http = require('http');
+const server = http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('Bot vivo 🤖');
+});
+server.listen(process.env.PORT || 3000);
