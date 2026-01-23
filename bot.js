@@ -46,42 +46,53 @@ async function mostrarPartidos(chatId, leagueId, period) {
     try {
         bot.sendChatAction(chatId, 'typing');
         const ahora = DateTime.now().setZone(TZ);
-        let params = { timezone: TZ };
+        
+        // --- INTENTO 1: Búsqueda Estándar ---
+        let params = { 
+            league: leagueId === 'all' ? undefined : leagueId,
+            season: leagueId === 'all' ? undefined : 2025,
+            date: period === 'today' || leagueId === 'all' ? ahora.toISODate() : undefined,
+            next: (period === 'next' && leagueId !== 'all') ? 10 : undefined,
+            live: period === 'live' ? 'all' : undefined
+        };
 
-        if (leagueId !== 'all') {
-            params.league = leagueId;
-            params.season = 2025; // Obligatorio para ligas Top en enero 2026
-            if (period === 'next') params.next = 8;
-            else params.date = ahora.toISODate();
-        } else {
-            if (period === 'live') params.live = 'all';
-            else params.date = ahora.toISODate();
-        }
+        // Limpiar parámetros undefined
+        Object.keys(params).forEach(key => params[key] === undefined && delete params[key]);
 
-        const res = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
+        let res = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
             headers: apiConfig.headers, 
-            params: params,
-            timeout: 5000 
+            params: params 
         });
 
-        const partidos = res.data.response;
+        let partidos = res.data.response;
 
-        if (!partidos || partidos.length === 0) {
-            return bot.sendMessage(chatId, `⚠️ *Sin datos:* La API no devolvió partidos para esta liga hoy.\n_Intenta con "Todo Hoy" desde el menú principal._`, { parse_mode: 'Markdown' });
+        // --- INTENTO 2: PLAN DE RESCATE (Si el 1 falló) ---
+        if ((!partidos || partidos.length === 0) && leagueId !== 'all') {
+            console.log("Reintentando búsqueda global de liga...");
+            // Quitamos fecha y temporada, solo pedimos los próximos 10
+            res = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
+                headers: apiConfig.headers, 
+                params: { league: leagueId, next: 10 } 
+            });
+            partidos = res.data.response;
         }
 
-        for (const p of partidos.slice(0, 5)) {
+        if (!partidos || partidos.length === 0) {
+            return bot.sendMessage(chatId, "❌ La API gratuita no devuelve datos para esta liga en este momento. Prueba con '🔴 En Vivo' para ver qué hay disponible ahora.");
+        }
+
+        // Enviar mensajes
+        for (const p of partidos.slice(0, 6)) {
             const localDT = DateTime.fromISO(p.fixture.date).setZone(TZ);
             const status = p.fixture.status.short;
-            const goles = p.goals.home !== null ? `(${p.goals.home}-${p.goals.away})` : '';
             
-            let txt = `🏆 *${p.league.name}*\n⚽ *${p.teams.home.name}* vs *${p.teams.away.name}* ${goles}\n📅 ${localDT.toFormat('dd/MM HH:mm')} (${status})`;
+            let txt = `🏆 *${p.league.name}*\n⚽ *${p.teams.home.name}* vs *${p.teams.away.name}*\n📅 ${localDT.toFormat('dd/MM HH:mm')} (${status})`;
 
             const btns = [[{ text: '📈 Ver Cuotas', callback_data: `odds_${p.fixture.id}` }]];
             await bot.sendMessage(chatId, txt, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: btns } });
         }
     } catch (e) {
-        bot.sendMessage(chatId, "❌ Error de conexión con la API.");
+        bot.sendMessage(chatId, "❌ Error de conexión.");
     }
 }
 
