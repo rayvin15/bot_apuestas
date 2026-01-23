@@ -9,7 +9,7 @@ const TOKEN = process.env.TELEGRAM_TOKEN;
 const API_KEY = process.env.FOOTBALL_API_KEY;
 const TZ = process.env.TZ || 'America/Lima';
 
-// Inicialización segura para evitar Error 409 en Render
+// Inicialización segura para evitar Error 409
 const bot = new TelegramBot(TOKEN, { 
     polling: { autoStart: false, params: { timeout: 10 } } 
 });
@@ -38,24 +38,21 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
-    // 1. Selección de Liga
     if (data.startsWith('league_')) {
         const id = data.split('_')[1];
-        bot.sendMessage(chatId, "📅 ¿Cuándo?", {
+        bot.sendMessage(chatId, "📅 ¿Qué deseas ver?", {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: 'Ver Partidos de Hoy', callback_data: `period_${id}_today` }],
-                    [{ text: 'Próximos Partidos', callback_data: `period_${id}_next` }]
+                    [{ text: 'Próximos Partidos (Calendario)', callback_data: `period_${id}_next` }]
                 ]
             }
         });
     } 
-    // 2. Selección de Periodo
     else if (data.startsWith('period_')) {
         const [_, id, time] = data.split('_');
         await mostrarPartidos(chatId, id, time);
     } 
-    // 3. Ver Cuotas
     else if (data.startsWith('odds_')) {
         await mostrarCuotas(chatId, data.split('_')[1]);
     }
@@ -65,32 +62,26 @@ bot.on('callback_query', async (query) => {
 
 async function mostrarPartidos(chatId, leagueId, period) {
     try {
+        bot.sendChatAction(chatId, 'typing');
         const ahora = DateTime.now().setZone(TZ);
-        let params = { 
-            timezone: TZ // Pedimos a la API que devuelva horas en nuestra zona (opcional pero ayuda)
-        };
+        let params = { timezone: TZ };
 
-        // LÓGICA DE TEMPORADA: Enero 2026 sigue siendo temporada 2025 en Europa
+        // Configuración de parámetros según la elección
         if (leagueId !== 'all') {
             params.league = leagueId;
-            params.season = 2025; 
-        }
-
-        // LÓGICA DE FECHAS
-        if (period === 'live') {
-            params.live = 'all';
-            delete params.season; // Para live no solemos necesitar season
-        } else if (period === 'today') {
-            params.date = ahora.toISODate();
-        } else if (period === 'next') {
-            params.next = 10; // Trae los próximos 10 partidos sin importar la fecha
+            if (period === 'today') {
+                params.date = ahora.toISODate();
+            } else {
+                // Para Premier/La Liga siempre es mejor traer los siguientes 10 si no hay hoy
+                params.next = 10;
+            }
         } else {
-            // Default: Semana
-            params.from = ahora.toISODate();
-            params.to = ahora.plus({ days: 5 }).toISODate();
+            // Filtro global "Todo Hoy"
+            if (period === 'live') params.live = 'all';
+            else params.date = ahora.toISODate();
         }
 
-        console.log(`Buscando partidos... Params: ${JSON.stringify(params)}`); // Log para Render
+        console.log(`Consultando API: ${JSON.stringify(params)}`);
 
         let res = await axios.get(`https://v3.football.api-sports.io/fixtures`, {
             headers: apiConfig.headers,
@@ -99,15 +90,12 @@ async function mostrarPartidos(chatId, leagueId, period) {
 
         let partidos = res.data.response;
 
-        // --- PLAN B: SI NO HAY PARTIDOS HOY EN ESA LIGA ---
-        // Si el usuario pidió "Hoy" de una liga específica y está vacío, buscamos los próximos automáticamente
-        if ((!partidos || partidos.length === 0) && period === 'today' && leagueId !== 'all') {
-            await bot.sendMessage(chatId, "⚠️ No hay partidos programados para hoy en esta liga.\n🔎 Buscando los próximos encuentros...");
-            
-            // Reintentamos buscando los próximos 5
+        // REINTENTO AUTOMÁTICO: Si pides hoy y no hay nada, busca los siguientes 5
+        if ((!partidos || partidos.length === 0) && leagueId !== 'all') {
             params.next = 5;
             delete params.date;
-            
+            delete params.season; 
+
             res = await axios.get(`https://v3.football.api-sports.io/fixtures`, {
                 headers: apiConfig.headers,
                 params: params
@@ -116,21 +104,18 @@ async function mostrarPartidos(chatId, leagueId, period) {
         }
 
         if (!partidos || partidos.length === 0) {
-            return bot.sendMessage(chatId, "🚫 No se encontraron partidos recientes ni próximos.");
+            return bot.sendMessage(chatId, "🚫 No hay partidos disponibles en este momento.");
         }
 
-        // Enviar resultados (Máximo 8)
-        const lista = partidos.slice(0, 8);
-        for (const p of lista) {
+        for (const p of partidos.slice(0, 8)) {
             const localDT = DateTime.fromISO(p.fixture.date).setZone(TZ);
             const status = p.fixture.status.short;
-            const goles = ['NS', 'P', 'CANC'].includes(status) ? '' : `[${p.goals.home}-${p.goals.away}]`;
+            const marcador = ['NS', 'PST', 'CANC'].includes(status) ? '' : `[${p.goals.home}-${p.goals.away}]`;
             
-            let txt = `🏆 *${p.league.name}* (Jornada ${p.league.round.replace(/\D/g,'')})\n`;
-            txt += `⚽ *${p.teams.home.name}* vs *${p.teams.away.name}* ${goles}\n`;
+            let txt = `🏆 *${p.league.name}*\n`;
+            txt += `⚽ *${p.teams.home.name}* vs *${p.teams.away.name}* ${marcador}\n`;
             txt += `📅 ${localDT.toFormat('dd/MM')} | ⏰ ${localDT.toFormat('HH:mm')} (${status})`;
 
-            // Botón de cuotas
             const keyboard = [[{ text: '📊 Ver Cuotas', callback_data: `odds_${p.fixture.id}` }]];
             
             await bot.sendMessage(chatId, txt, {
@@ -140,38 +125,28 @@ async function mostrarPartidos(chatId, leagueId, period) {
         }
 
     } catch (e) {
-        console.error("Error en mostrarPartidos:", e.message);
-        bot.sendMessage(chatId, "❌ Error de conexión con la API.");
+        console.error("Error en partidos:", e.message);
+        bot.sendMessage(chatId, "❌ Error al cargar partidos.");
     }
 }
 
 async function mostrarCuotas(chatId, fixtureId) {
-    // Feedback visual
     bot.sendChatAction(chatId, 'typing');
-
     try {
-        console.log(`Consultando cuotas para ID: ${fixtureId}`);
         const res = await axios.get(`https://v3.football.api-sports.io/odds?fixture=${fixtureId}`, apiConfig);
-        
-        const data = res.data.response?.[0]; // Uso de Optional Chaining para evitar crash
+        const data = res.data.response?.[0];
 
+        // Blindaje para evitar el error "find of undefined"
         if (!data || !data.bookmakers || data.bookmakers.length === 0) {
-            return bot.sendMessage(chatId, "🔒 Cuotas no disponibles (API Limit o partido no listado).");
+            return bot.sendMessage(chatId, "🔒 Cuotas no disponibles para este partido en el plan gratuito.");
         }
 
-        // --- CORRECCIÓN DEL CRASH (undefined reading 'find') ---
-        // Buscamos un bookmaker que tenga mercados. Si el 0 no tiene, buscamos cualquiera que tenga.
-        const bookie = data.bookmakers.find(b => b.markets && b.markets.length > 0);
-
-        if (!bookie) {
-            return bot.sendMessage(chatId, "⚠️ Hay bookmakers, pero sin mercados disponibles.");
-        }
-
-        // Buscamos el mercado exacto con proteccion '?'
+        // Buscamos un bookmaker con mercados reales
+        const bookie = data.bookmakers.find(b => b.markets && b.markets.length > 0) || data.bookmakers[0];
         const market = bookie.markets?.find(m => m.name === "Match Winner");
 
         if (!market) {
-            return bot.sendMessage(chatId, `📉 Cuotas disponibles en ${bookie.name}, pero no el 1X2.`);
+            return bot.sendMessage(chatId, `📉 No hay mercado 1X2 disponible en ${bookie.name}.`);
         }
 
         let msg = `💰 *Cuotas 1X2 (${bookie.name})*\n`;
@@ -183,17 +158,15 @@ async function mostrarCuotas(chatId, fixtureId) {
         bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
 
     } catch (e) {
-        console.error("Error mostrando cuotas:", e); // Ver el error real en consola
-        bot.sendMessage(chatId, "❌ Ocurrió un error al procesar las cuotas.");
+        bot.sendMessage(chatId, "❌ Error al procesar las cuotas.");
     }
 }
 
-// Servidor HTTP para Render
-http.createServer((req, res) => { res.writeHead(200); res.end('Bot Online'); }).listen(process.env.PORT || 3000);
+// Servidor Render
+http.createServer((req, res) => { res.end('Bot Online'); }).listen(process.env.PORT || 3000);
 
-// Arranque retardado
-console.log("⏳ Iniciando bot en 3 segundos...");
+// Inicio seguro
 setTimeout(() => {
     bot.startPolling();
-    console.log("🚀 Bot escuchando...");
+    console.log("🚀 Bot funcionando correctamente.");
 }, 3000);
