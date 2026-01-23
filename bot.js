@@ -78,12 +78,17 @@ bot.on('callback_query', async (callbackQuery) => {
 async function mostrarPartidos(chatId, leagueId, period) {
     try {
         const ahora = DateTime.now().setZone(TZ);
-        let params = { league: leagueId, season: 2025 };
+        let params = { 
+            league: leagueId, 
+            season: 2025 // Asegúrate que la temporada sea la correcta
+        };
 
         if (period === 'today') {
             params.date = ahora.toISODate();
         } else {
-            params.next = 10;
+            // CAMBIO: Usamos rango de fechas en lugar de 'next'
+            params.from = ahora.toISODate();
+            params.to = ahora.plus({ days: 7 }).toISODate();
         }
 
         const res = await axios.get(`https://v3.football.api-sports.io/fixtures`, {
@@ -93,30 +98,37 @@ async function mostrarPartidos(chatId, leagueId, period) {
 
         const partidos = res.data.response;
 
+        // Si sigue vacío, probamos sin el filtro de temporada (a veces la API cambia el año)
         if (!partidos || partidos.length === 0) {
-            return bot.sendMessage(chatId, "No encontré partidos para este periodo. 😴");
+            console.log("No se encontraron partidos con params:", params);
+            return bot.sendMessage(chatId, "No encontré partidos para estos 7 días. Prueba con otra liga o intenta más tarde. 😴");
         }
 
-        for (const p of partidos) {
-            // Convertir hora UTC a Local
-            const localDT = DateTime.fromISO(p.fixture.date).setZone(TZ);
-            const fecha = localDT.toFormat('dd/MM');
-            const hora = localDT.toFormat('HH:mm');
-            const estadio = p.fixture.venue.name || 'Estadio desconocido';
+        // Construir mensaje con los partidos
+        let msg = "📋 *Partidos Disponibles*\n\n";
+        const keyboard = [];
 
-            const txt = `⚽ *${p.teams.home.name}* vs *${p.teams.away.name}*\n` +
-                        `📅 Fecha: ${fecha} | ⏰ Hora: ${hora}\n` +
-                        `🏟️ ${estadio}`;
+        partidos.forEach((partido, index) => {
+            const fecha = DateTime.fromISO(partido.fixture.date).setZone(TZ);
+            msg += `${index + 1}. ${partido.teams.home.name} vs ${partido.teams.away.name}\n`;
+            msg += `   ⏰ ${fecha.toFormat('dd/MM HH:mm')}\n\n`;
+            
+            keyboard.push([{
+                text: `${partido.teams.home.name} vs ${partido.teams.away.name}`,
+                callback_data: `odds_${partido.fixture.id}`
+            }]);
+        });
 
-            const opts = {
-                reply_markup: {
-                    inline_keyboard: [[{ text: '📈 Ver Cuotas', callback_data: `odds_${p.fixture.id}` }]]
-                },
-                parse_mode: 'Markdown'
-            };
-            await bot.sendMessage(chatId, txt, opts);
-        }
+        const opts = {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: keyboard
+            }
+        };
+
+        bot.sendMessage(chatId, msg, opts);
     } catch (e) {
+        console.error("Error en mostrarPartidos:", e.message);
         bot.sendMessage(chatId, "Error al obtener partidos. ❌");
     }
 }
