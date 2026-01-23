@@ -1,10 +1,13 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
+const { DateTime } = require('luxon');
+const http = require('http');
 
 // 🔑 CONFIGURACIÓN
 const TOKEN = process.env.TELEGRAM_TOKEN;
 const API_KEY = process.env.FOOTBALL_API_KEY;
+const TZ = process.env.TZ || 'America/Lima'; // Configurable desde Render
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
@@ -15,7 +18,7 @@ const apiConfig = {
     }
 };
 
-// 1. Menú principal con selección de ligas
+// 1. Menú principal: Selección de Ligas
 bot.onText(/\/start/, (msg) => {
     const opts = {
         reply_markup: {
@@ -31,71 +34,111 @@ bot.onText(/\/start/, (msg) => {
             ]
         }
     };
-    bot.sendMessage(msg.chat.id, "🏆 *Bienvenido al Bot de Apuestas*\nSelecciona una liga para ver los partidos de hoy:", { parse_mode: 'Markdown', ...opts });
+    bot.sendMessage(msg.chat.id, "🏆 *Bot de Apuestas Pro*\nSelecciona una competición:", { parse_mode: 'Markdown', ...opts });
 });
 
-// 2. Manejador de clics en los botones (Callback Queries)
+// 2. Manejador de clics (Callback Queries)
 bot.on('callback_query', async (callbackQuery) => {
     const data = callbackQuery.data;
     const chatId = callbackQuery.message.chat.id;
 
-    // Si el usuario eligió una LIGA
+    // A. Selección de Liga -> Preguntar Periodo
     if (data.startsWith('league_')) {
         const leagueId = data.split('_')[1];
-        await mostrarPartidos(chatId, leagueId);
+        const opts = {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '📅 Partidos de Hoy', callback_data: `period_${leagueId}_today` },
+                        { text: '🗓️ Próximos 7 días', callback_data: `period_${leagueId}_week` }
+                    ]
+                ]
+            }
+        };
+        bot.sendMessage(chatId, "⏱️ ¿Qué partidos quieres consultar?", opts);
     }
 
-    // Si el usuario eligió ver CUOTAS de un partido
+    // B. Selección de Periodo -> Mostrar Lista
+    if (data.startsWith('period_')) {
+        const [_, leagueId, period] = data.split('_');
+        await mostrarPartidos(chatId, leagueId, period);
+    }
+
+    // C. Ver Cuotas
     if (data.startsWith('odds_')) {
         const fixtureId = data.split('_')[1];
         await mostrarCuotas(chatId, fixtureId);
     }
+    
+    // Cerrar el relojito de carga en Telegram
+    bot.answerCallbackQuery(callbackQuery.id);
 });
 
-// 3. Función para mostrar partidos del día
-async function mostrarPartidos(chatId, leagueId) {
+// 3. Función: Mostrar Partidos con Ajuste Horario
+async function mostrarPartidos(chatId, leagueId, period) {
     try {
-        const hoy = new Date().toISOString().split('T')[0];
-        const res = await axios.get(`https://v3.football.api-sports.io/fixtures?league=${leagueId}&date=${hoy}&season=2025`, apiConfig);
-        const partidos = res.data.response;
+        const ahora = DateTime.now().setZone(TZ);
+        let params = { league: leagueId, season: 2025 };
 
-        if (partidos.length === 0) {
-            return bot.sendMessage(chatId, "No hay partidos para hoy en esta liga. 😴");
+        if (period === 'today') {
+            params.date = ahora.toISODate();
+        } else {
+            params.next = 10;
         }
 
-        partidos.forEach(p => {
-            const txt = `⚽ *${p.teams.home.name}* vs *${p.teams.away.name}*\n⏰ ${p.fixture.date.split('T')[1].substring(0, 5)} UTC`;
+        const res = await axios.get(`https://v3.football.api-sports.io/fixtures`, {
+            headers: apiConfig.headers,
+            params: params
+        });
+
+        const partidos = res.data.response;
+
+        if (!partidos || partidos.length === 0) {
+            return bot.sendMessage(chatId, "No encontré partidos para este periodo. 😴");
+        }
+
+        for (const p of partidos) {
+            // Convertir hora UTC a Local
+            const localDT = DateTime.fromISO(p.fixture.date).setZone(TZ);
+            const fecha = localDT.toFormat('dd/MM');
+            const hora = localDT.toFormat('HH:mm');
+            const estadio = p.fixture.venue.name || 'Estadio desconocido';
+
+            const txt = `⚽ *${p.teams.home.name}* vs *${p.teams.away.name}*\n` +
+                        `📅 Fecha: ${fecha} | ⏰ Hora: ${hora}\n` +
+                        `🏟️ ${estadio}`;
+
             const opts = {
                 reply_markup: {
                     inline_keyboard: [[{ text: '📈 Ver Cuotas', callback_data: `odds_${p.fixture.id}` }]]
                 },
                 parse_mode: 'Markdown'
             };
-            bot.sendMessage(chatId, txt, opts);
-        });
+            await bot.sendMessage(chatId, txt, opts);
+        }
     } catch (e) {
-        bot.sendMessage(chatId, "Error al buscar partidos. ❌");
+        bot.sendMessage(chatId, "Error al obtener partidos. ❌");
     }
 }
 
-// 4. Función para mostrar cuotas (1X2)
+// 4. Función: Mostrar Cuotas (1X2)
 async function mostrarCuotas(chatId, fixtureId) {
     try {
         const res = await axios.get(`https://v3.football.api-sports.io/odds?fixture=${fixtureId}`, apiConfig);
         const data = res.data.response[0];
 
         if (!data || !data.bookmakers.length) {
-            return bot.sendMessage(chatId, "Cuotas no disponibles para este partido todavía. ⏳");
+            return bot.sendMessage(chatId, "Cuotas no disponibles para este partido. ⏳");
         }
 
-        // Buscamos el mercado "Match Winner" (1X2) en el primer bookmaker
-        const bookmaker = data.bookmakers[0];
-        const market = bookmaker.markets.find(m => m.name === "Match Winner");
-        
+        const bookie = data.bookmakers[0];
+        const market = bookie.markets.find(m => m.name === "Match Winner");
+
         if (market) {
-            let msg = `📊 *Cuotas (1X2) - ${bookmaker.name}*\n\n`;
+            let msg = `📊 *Cuotas 1X2 (${bookie.name})*\n\n`;
             market.values.forEach(v => {
-                msg += `🔹 *${v.value}:* ${v.odd}\n`;
+                const emoji = v.value === 'Home' ? '🏠' : v.value === 'Draw' ? '🤝' : '🚀';
+                msg += `${emoji} *${v.value}:* ${v.odd}\n`;
             });
             bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         }
@@ -103,9 +146,16 @@ async function mostrarCuotas(chatId, fixtureId) {
         bot.sendMessage(chatId, "Error al obtener cuotas. ❌");
     }
 }
-const http = require('http');
+
+// 5. Servidor HTTP para mantener vivo el bot en Render
 const server = http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Bot vivo 🤖');
+    res.writeHead(200);
+    res.end('Bot de Apuestas Online 🤖');
 });
-server.listen(process.env.PORT || 3000);
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Servidor HTTP escuchando en puerto ${PORT}`);
+});
+
+console.log("🤖 Bot iniciado correctamente...");
