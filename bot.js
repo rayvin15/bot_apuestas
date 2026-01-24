@@ -99,3 +99,18 @@ async function generarAnalisisIA(chatId, home, away) {
 }
 
 http.createServer((req, res) => res.end('OK')).listen(process.env.PORT || 3000);
+
+// --- SOLUCIÓN AL ERROR DE DOBLE INSTANCIA ---
+// Estas líneas detectan cuando Render va a apagar el bot y cierran la conexión
+const cerrarBot = () => {
+    console.log("Cerrando instancia vieja... soltando token.");
+    bot.stopPolling().then(() => process.exit(0));
+};
+
+process.on('SIGINT', cerrarBot);
+process.on('SIGTERM', cerrarBot);
+
+// Evita que el bot se detenga por errores menores
+process.on('uncaughtException', (err) => {
+    console.error('Error no capturado:', err);
+});
