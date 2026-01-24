@@ -1,12 +1,21 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const http = require('http');
 
-// Configuración de Servicios
+// --- CONFIGURACIÓN DE IA (SIN CENSURA) ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ 
+    model: "gemini-1.5-flash",
+    safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    ]
+});
+
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
 const apiConfig = {
@@ -18,12 +27,12 @@ const apiConfig = {
 
 // --- MENÚ PRINCIPAL ---
 bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, "💰 *Analista de Apuestas IA*\nSelecciona mercado:", {
+    bot.sendMessage(msg.chat.id, "🤖 *Tipster IA Activo*\nSelecciona qué buscar:", {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 La Liga', callback_data: 'league_140' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'league_39' }],
-                [{ text: '🔴 EN VIVO (Mundial)', callback_data: 'live_now' }]
+                [{ text: '🔴 EN VIVO AHORA', callback_data: 'live_now' }]
             ]
         }
     });
@@ -34,28 +43,21 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
-    // 1. Lógica para Ligas Específicas
     if (data.startsWith('league_')) {
         await buscarPartidos(chatId, { league: data.split('_')[1], next: 5 });
     } 
-    // 2. Lógica para EN VIVO (Aquí estaba el error antes)
     else if (data === 'live_now') {
         await buscarPartidos(chatId, { live: 'all' });
     } 
-    // 3. Lógica para ANÁLISIS IA
     else if (data.startsWith('analyze|')) {
-        // Usamos '|' como separador para evitar errores con espacios en nombres
-        const parts = data.split('|'); // analyze|Local|Visita
-        const home = parts[1];
-        const away = parts[2];
-        await generarAnalisisApuestas(chatId, home, away);
+        const parts = data.split('|');
+        // analyze|Home|Away
+        await generarAnalisisApuestas(chatId, parts[1], parts[2]);
     }
     
-    // Evita que el botón se quede "cargando"
     try { await bot.answerCallbackQuery(query.id); } catch(e) {}
 });
 
-// --- FUNCIÓN BUSCAR PARTIDOS (Flexible) ---
 async function buscarPartidos(chatId, params) {
     bot.sendChatAction(chatId, 'typing');
     try {
@@ -67,79 +69,68 @@ async function buscarPartidos(chatId, params) {
         const partidos = res.data.response;
 
         if (!partidos || partidos.length === 0) {
-            return bot.sendMessage(chatId, "⚠️ No se encontraron partidos con este filtro ahora mismo.");
+            return bot.sendMessage(chatId, "⚠️ No encontré partidos disponibles con ese filtro.");
         }
 
-        // Mostramos máximo 6 para no saturar
-        for (const p of partidos.slice(0, 6)) {
+        // Enviamos los primeros 5
+        for (const p of partidos.slice(0, 5)) {
             const home = p.teams.home.name;
             const away = p.teams.away.name;
-            const status = p.fixture.status.short; // 1H, 2H, NS (Not Started)
+            const status = p.fixture.status.short;
             const score = p.goals.home !== null ? `(${p.goals.home}-${p.goals.away})` : '';
+
+            // Limpiamos nombres para evitar errores en el botón
+            const safeHome = home.replace(/[|]/g, ''); 
+            const safeAway = away.replace(/[|]/g, '');
 
             const txt = `🏆 *${p.league.name}*\n⚽ *${home}* vs *${away}* ${score}\n⏱️ Estado: ${status}`;
             
-            // Limitamos el tamaño del nombre para que quepa en el botón de Telegram (max 64 bytes data)
-            const safeHome = home.substring(0, 15); 
-            const safeAway = away.substring(0, 15);
-
             bot.sendMessage(chatId, txt, {
                 parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [[
-                        // Enviamos los datos separados por |
-                        { text: '🧠 Predecir Apuesta', callback_data: `analyze|${safeHome}|${safeAway}` }
+                        { text: '🧠 Predecir con IA', callback_data: `analyze|${safeHome}|${safeAway}` }
                     ]]
                 }
             });
         }
     } catch (e) {
         console.error(e);
-        bot.sendMessage(chatId, "❌ Error obteniendo datos (Posible API Limit o Suspensión).");
+        bot.sendMessage(chatId, "❌ Error al conectar con API Fútbol (Revisa tu API Key).");
     }
 }
 
-// --- IA TIPSTER PRO ---
 async function generarAnalisisApuestas(chatId, home, away) {
-    bot.sendMessage(chatId, `🧠 *La IA está analizando ${home} vs ${away}...*`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `🔮 *Consultando a la IA sobre ${home} vs ${away}...*`, { parse_mode: 'Markdown' });
     bot.sendChatAction(chatId, 'typing');
     
     try {
-        // PROMPT DE INGENIERÍA PARA APUESTAS
-        const prompt = `Actúa como un Tipster Profesional de Apuestas Deportivas (Handicapper).
+        const prompt = `Eres un experto analista deportivo. 
         Analiza el partido de fútbol: ${home} (Local) vs ${away} (Visitante).
+        Dame un pronóstico breve para apostar.
         
-        Basándote en su historia, jerarquía y estilos de juego, genera un reporte breve en este formato exacto:
-
-        📊 *PROBABILIDADES:*
-        • ${home}: XX%
-        • Empate: XX%
-        • ${away}: XX%
-
-        💎 *LA APUESTA SEGURA:*
-        (Elige una opción de bajo riesgo: Doble Oportunidad, +1.5 Goles, etc.)
-
-        🚀 *LA APUESTA DE VALOR:*
-        (Una opción más arriesgada pero probable: Ganador directo, Ambos Marcan, +2.5 Goles)
-
-        🎯 *MARCADOR EXACTO PROBABLE:*
-        (Ej: 2-1)
-
-        📝 *RAZÓN:*
-        (Una frase corta de por qué).
-
-        Usa emojis. Responde en Español.`;
+        Formato de respuesta:
+        1. 📊 Probabilidad de victoria (Ej: Local 40%, Empate 30%, Visita 30%)
+        2. 💎 La Apuesta recomendada.
+        3. 🎯 Marcador exacto probable.
+        
+        Sé directo y usa emojis.`;
 
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const text = response.text();
 
         bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+
     } catch (e) {
-        console.error("Error IA:", e);
-        bot.sendMessage(chatId, "❌ La IA está saturada o no pudo procesar la solicitud.");
+        console.error("Error Gemini:", e);
+        // AQUÍ ESTÁ LA CLAVE: Le enviamos el error real al usuario
+        let errorMsg = e.message || JSON.stringify(e);
+        if (errorMsg.includes("API key not valid")) errorMsg = "La API Key de Google Gemini es inválida o falta en Render.";
+        if (errorMsg.includes("SAFETY")) errorMsg = "La IA bloqueó la respuesta por seguridad (tema apuestas).";
+        
+        bot.sendMessage(chatId, `❌ Error técnico de la IA:\n\`${errorMsg}\``, { parse_mode: 'Markdown' });
     }
 }
 
-// Servidor para Render
-http.createServer((req, res) => res.end('Bot Betting AI Online')).listen(process.env.PORT || 3000);
+http.createServer((req, res) => res.end('Bot OK')).listen(process.env.PORT || 3000);
