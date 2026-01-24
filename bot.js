@@ -71,17 +71,26 @@ async function generarAnalisisIA(chatId, home, away) {
     bot.sendMessage(chatId, `⏳ *Gemini 3 analizando ${home} vs ${away}...*`, { parse_mode: 'Markdown' });
     
     try {
-        // Usando el método y modelo de tu captura de pantalla
         const response = await ai.models.generateContent({
             model: "gemini-3-flash-preview", 
-            contents: `Eres un experto en apuestas. Analiza el partido ${home} vs ${away}. 
-            Dame Probabilidades %, Apuesta Recomendada y Marcador Probable. Sé breve y usa emojis.`
+            contents: `Actúa como tipster. Analiza ${home} vs ${away}. 
+            Dame Probabilidades %, Apuesta y Marcador. 
+            IMPORTANTE: No uses guiones bajos (_), solo usa asteriscos para negrita. Responde en español.`
         });
 
-        bot.sendMessage(chatId, `📊 *PRONÓSTICO IA:*\n\n${response.text}`, { parse_mode: 'Markdown' });
+        const textOut = response.text;
+
+        // Intentamos enviar con Markdown
+        await bot.sendMessage(chatId, `📊 *PRONÓSTICO IA:*\n\n${textOut}`, { parse_mode: 'Markdown' })
+            .catch(async (err) => {
+                // Si falla por los caracteres, enviamos sin Markdown para no bloquear el bot
+                console.log("Error de parseo, enviando sin formato...");
+                await bot.sendMessage(chatId, `📊 PRONÓSTICO IA:\n\n${textOut}`);
+            });
+
     } catch (e) {
         console.error("Error de IA:", e);
-        bot.sendMessage(chatId, "❌ Error: Verifica si instalaste la librería `@google/genai`.");
+        bot.sendMessage(chatId, "❌ Error al generar el análisis.");
     }
 }
 
