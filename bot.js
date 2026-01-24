@@ -1,116 +1,93 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai"); // Nueva librería
 const http = require('http');
 
-// 1. Verificación de Keys (Log en consola de Render)
-if (!process.env.GEMINI_API_KEY) console.log("⚠️ FALTA GEMINI_API_KEY");
-if (!process.env.FOOTBALL_API_KEY) console.log("⚠️ FALTA FOOTBALL_API_KEY");
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+// --- 1. CONFIGURACIÓN IA (Sintaxis Gemini 3) ---
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
+// --- 2. MENÚ DE LIGAS COMPLETO ---
 bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, "🎯 *Analista Predictivo Activo*\nElige una liga:", {
+    bot.sendMessage(msg.chat.id, "🏆 *Analista Pro v3.0*\nElige una competición para predecir:", {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🇪🇸 La Liga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
-                [{ text: '🇪🇺 Champions League', callback_data: 'comp_CL' }]
+                [{ text: '🇪🇸 La Liga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }, { text: '🇮🇹 Serie A', callback_data: 'comp_SA' }],
+                [{ text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }, { text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }, { text: '🇪🇺 Champions', callback_data: 'comp_CL' }],
+                [{ text: '🇵🇹 Primeira', callback_data: 'comp_PPL' }, { text: '🇳🇱 Eredivisie', callback_data: 'comp_DED' }, { text: '🇧🇷 Brasileirao', callback_data: 'comp_BSA' }],
+                [{ text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Champ.', callback_data: 'comp_ELC' }, { text: '🌍 Mundial', callback_data: 'comp_WC' }, { text: '🏆 Euro', callback_data: 'comp_EC' }]
             ]
         }
     });
 });
 
+// --- 3. MANEJADOR DE EVENTOS ---
 bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
     if (data.startsWith('comp_')) {
         await buscarPartidos(chatId, data.split('_')[1]);
-    } 
-    else if (data.startsWith('analyze|')) {
+    } else if (data.startsWith('analyze|')) {
         const [_, home, away] = data.split('|');
         await generarAnalisisIA(chatId, home, away);
     }
     bot.answerCallbackQuery(query.id).catch(() => {});
 });
 
-async function buscarPartidos(chatId, compCode) {
+// --- 4. FUNCIÓN OBTENER DATOS ---
+async function buscarPartidos(chatId, code) {
     bot.sendChatAction(chatId, 'typing');
     try {
-        // Obtenemos los próximos 5 partidos programados
-        const res = await axios.get(`https://api.football-data.org/v4/competitions/${compCode}/matches?status=SCHEDULED&limit=5`, {
+        const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches?status=SCHEDULED&limit=4`, {
             headers: footballHeaders
         });
 
         const matches = res.data.matches;
-        if (!matches || matches.length === 0) return bot.sendMessage(chatId, "No hay partidos próximos.");
+        if (!matches || matches.length === 0) return bot.sendMessage(chatId, "⚠️ No hay partidos próximos.");
 
         for (const m of matches) {
             const home = m.homeTeam.name;
             const away = m.awayTeam.name;
-            
-            // Acortamos nombres para el botón (Límite 64 chars)
-            const safeHome = home.substring(0, 15);
-            const safeAway = away.substring(0, 15);
-
             bot.sendMessage(chatId, `🏟️ *${home}* vs *${away}*`, {
                 parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [[
-                        { text: '🧠 Análisis de Apuestas', callback_data: `analyze|${safeHome}|${safeAway}` }
+                        { text: '🧠 Análisis Gemini 3', callback_data: `analyze|${home.substring(0,15)}|${away.substring(0,15)}` }
                     ]]
                 }
             });
         }
     } catch (e) {
-        bot.sendMessage(chatId, "❌ Error en Football-Data. Revisa tu Key.");
+        bot.sendMessage(chatId, "❌ Error en la API de Fútbol.");
     }
 }
 
+// --- 5. FUNCIÓN IA (Sintaxis Nueva de tu captura) ---
 async function generarAnalisisIA(chatId, home, away) {
-    bot.sendMessage(chatId, `🔮 Analizando ${home} vs ${away}...`);
-    bot.sendChatAction(chatId, 'typing');
-
+    bot.sendMessage(chatId, `⏳ *Gemini 3 analizando ${home} vs ${away}...*`, { parse_mode: 'Markdown' });
+    
     try {
-        const prompt = `Eres un experto analista deportivo. Analiza el partido ${home} vs ${away}. 
-        Dame: Probabilidades 1X2, marcador probable y una sugerencia de apuesta. 
-        Responde en español, muy breve y con emojis.`;
+        // Usando el método y modelo de tu captura de pantalla
+        const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview", 
+            contents: `Eres un experto en apuestas. Analiza el partido ${home} vs ${away}. 
+            Dame Probabilidades %, Apuesta Recomendada y Marcador Probable. Sé breve y usa emojis.`
+        });
 
-        // Lógica corregida para Gemini 1.5
-        const result = await model.generateContent(text = prompt);
-        const response = result.response;
-        const textOut = response.text();
-
-        bot.sendMessage(chatId, `📊 *PRONÓSTICO IA:*\n\n${textOut}`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `📊 *PRONÓSTICO IA:*\n\n${response.text}`, { parse_mode: 'Markdown' });
     } catch (e) {
-        console.error(e);
-        // Diagnóstico detallado para el usuario
-        let errorDetalle = e.message;
-        if (errorDetalle.includes("API key not valid")) errorDetalle = "Tu GEMINI_API_KEY no es válida.";
-        
-        bot.sendMessage(chatId, `❌ *La IA falló:* \n\`${errorDetalle}\``, { parse_mode: 'Markdown' });
+        console.error("Error de IA:", e);
+        bot.sendMessage(chatId, "❌ Error: Verifica si instalaste la librería `@google/genai`.");
     }
 }
 
-http.createServer((req, res) => res.end('OK')).listen(process.env.PORT || 3000);
+// --- 6. CIERRE SEGURO ---
+const cleanup = () => bot.stopPolling().then(() => process.exit(0));
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
 
-// --- SOLUCIÓN AL ERROR DE DOBLE INSTANCIA ---
-// Estas líneas detectan cuando Render va a apagar el bot y cierran la conexión
-const cerrarBot = () => {
-    console.log("Cerrando instancia vieja... soltando token.");
-    bot.stopPolling().then(() => process.exit(0));
-};
-
-process.on('SIGINT', cerrarBot);
-process.on('SIGTERM', cerrarBot);
-
-// Evita que el bot se detenga por errores menores
-process.on('uncaughtException', (err) => {
-    console.error('Error no capturado:', err);
-});
+http.createServer((req, res) => res.end('Bot OK')).listen(process.env.PORT || 3000);
