@@ -46,53 +46,69 @@ async function mostrarPartidos(chatId, leagueId, period) {
     try {
         bot.sendChatAction(chatId, 'typing');
         const ahora = DateTime.now().setZone(TZ);
-        
-        // --- INTENTO 1: Búsqueda Estándar ---
-        let params = { 
-            league: leagueId === 'all' ? undefined : leagueId,
-            season: leagueId === 'all' ? undefined : 2025,
-            date: period === 'today' || leagueId === 'all' ? ahora.toISODate() : undefined,
-            next: (period === 'next' && leagueId !== 'all') ? 10 : undefined,
-            live: period === 'live' ? 'all' : undefined
-        };
+        let params = { timezone: TZ };
 
-        // Limpiar parámetros undefined
-        Object.keys(params).forEach(key => params[key] === undefined && delete params[key]);
+        // --- LÓGICA DE "EN VIVO" (MODO ULTRA COMPATIBLE) ---
+        if (period === 'live') {
+            // Para ver qué hay en vivo NO filtramos por liga ni temporada
+            // Así nos aseguramos de que siempre devuelva lo que se está jugando ahora
+            params = { live: 'all', timezone: TZ };
+        } 
+        else if (leagueId !== 'all') {
+            // Para ligas específicas
+            params.league = leagueId;
+            params.season = 2025;
+            if (period === 'today') params.date = ahora.toISODate();
+            else params.next = 10;
+        } 
+        else {
+            // "Todo Hoy" Global
+            params.date = ahora.toISODate();
+        }
 
-        let res = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
+        console.log(`Consultando API con: ${JSON.stringify(params)}`);
+
+        const res = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
             headers: apiConfig.headers, 
             params: params 
         });
 
         let partidos = res.data.response;
 
-        // --- INTENTO 2: PLAN DE RESCATE (Si el 1 falló) ---
-        if ((!partidos || partidos.length === 0) && leagueId !== 'all') {
-            console.log("Reintentando búsqueda global de liga...");
-            // Quitamos fecha y temporada, solo pedimos los próximos 10
-            res = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
+        // --- RESCATE PARA LIGAS ESPECÍFICAS ---
+        if ((!partidos || partidos.length === 0) && period !== 'live' && leagueId !== 'all') {
+            console.log("Rescate: Intentando sin temporada...");
+            delete params.season;
+            params.next = 5;
+            const resRetry = await axios.get(`https://v3.football.api-sports.io/fixtures`, { 
                 headers: apiConfig.headers, 
-                params: { league: leagueId, next: 10 } 
+                params: params 
             });
-            partidos = res.data.response;
+            partidos = resRetry.data.response;
         }
 
         if (!partidos || partidos.length === 0) {
-            return bot.sendMessage(chatId, "❌ La API gratuita no devuelve datos para esta liga en este momento. Prueba con '🔴 En Vivo' para ver qué hay disponible ahora.");
+            const extraInfo = period === 'live' ? "No hay partidos jugándose ahora mismo." : "No hay partidos programados.";
+            return bot.sendMessage(chatId, `⚠️ *Sin resultados:* ${extraInfo}`, { parse_mode: 'Markdown' });
         }
 
-        // Enviar mensajes
-        for (const p of partidos.slice(0, 6)) {
+        // Enviar mensajes (máximo 10 para no saturar)
+        for (const p of partidos.slice(0, 10)) {
             const localDT = DateTime.fromISO(p.fixture.date).setZone(TZ);
             const status = p.fixture.status.short;
+            const tiempo = p.fixture.status.elapsed ? `(Min ${p.fixture.status.elapsed}')` : '';
+            const goles = p.goals.home !== null ? `[${p.goals.home}-${p.goals.away}]` : '';
             
-            let txt = `🏆 *${p.league.name}*\n⚽ *${p.teams.home.name}* vs *${p.teams.away.name}*\n📅 ${localDT.toFormat('dd/MM HH:mm')} (${status})`;
+            let txt = `🏆 *${p.league.name}*\n`;
+            txt += `⚽ *${p.teams.home.name}* vs *${p.teams.away.name}* ${goles}\n`;
+            txt += `⏰ ${localDT.toFormat('HH:mm')} | Status: *${status}* ${tiempo}`;
 
-            const btns = [[{ text: '📈 Ver Cuotas', callback_data: `odds_${p.fixture.id}` }]];
+            const btns = [[{ text: '📊 Ver Cuotas', callback_data: `odds_${p.fixture.id}` }]];
             await bot.sendMessage(chatId, txt, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: btns } });
         }
     } catch (e) {
-        bot.sendMessage(chatId, "❌ Error de conexión.");
+        console.error("Error:", e.message);
+        bot.sendMessage(chatId, "❌ Error al conectar con la API.");
     }
 }
 
