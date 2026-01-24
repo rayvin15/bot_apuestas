@@ -1,136 +1,99 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const http = require('http');
 
-// --- CONFIGURACIÓN DE IA (SIN CENSURA) ---
+// CONFIGURACIÓN
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",
-    safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    ]
-});
-
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-const apiConfig = {
-    headers: { 
-        'x-apisports-key': process.env.FOOTBALL_API_KEY, 
-        'x-rapidapi-host': 'v3.football.api-sports.io' 
-    }
-};
+// Headers específicos para Football-Data.org
+const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
 // --- MENÚ PRINCIPAL ---
 bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, "🤖 *Tipster IA Activo*\nSelecciona qué buscar:", {
+    bot.sendMessage(msg.chat.id, "🎯 *Analista Predictivo (Ligas Top)*\nElige una competición:", {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🇪🇸 La Liga', callback_data: 'league_140' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'league_39' }],
-                [{ text: '🔴 EN VIVO AHORA', callback_data: 'live_now' }]
+                [{ text: '🇪🇸 La Liga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League', callback_data: 'comp_PL' }],
+                [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }]
             ]
         }
     });
 });
 
-// --- MANEJADOR DE CLICS ---
 bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
-    if (data.startsWith('league_')) {
-        await buscarPartidos(chatId, { league: data.split('_')[1], next: 5 });
-    } 
-    else if (data === 'live_now') {
-        await buscarPartidos(chatId, { live: 'all' });
+    if (data.startsWith('comp_')) {
+        const code = data.split('_')[1];
+        await buscarPartidos(chatId, code);
     } 
     else if (data.startsWith('analyze|')) {
-        const parts = data.split('|');
-        // analyze|Home|Away
-        await generarAnalisisApuestas(chatId, parts[1], parts[2]);
+        const [_, home, away] = data.split('|');
+        await generarAnalisisIA(chatId, home, away);
     }
-    
-    try { await bot.answerCallbackQuery(query.id); } catch(e) {}
+    bot.answerCallbackQuery(query.id).catch(() => {});
 });
 
-async function buscarPartidos(chatId, params) {
+// --- BUSCAR PARTIDOS ---
+async function buscarPartidos(chatId, compCode) {
     bot.sendChatAction(chatId, 'typing');
     try {
-        const res = await axios.get(`https://v3.football.api-sports.io/fixtures`, {
-            headers: apiConfig.headers,
-            params: params
+        // Obtenemos los partidos de la jornada actual
+        const res = await axios.get(`https://api.football-data.org/v4/competitions/${compCode}/matches?status=SCHEDULED`, {
+            headers: footballHeaders
         });
-        
-        const partidos = res.data.response;
 
-        if (!partidos || partidos.length === 0) {
-            return bot.sendMessage(chatId, "⚠️ No encontré partidos disponibles con ese filtro.");
+        const matches = res.data.matches;
+
+        if (!matches || matches.length === 0) {
+            return bot.sendMessage(chatId, "No hay partidos programados próximamente.");
         }
 
-        // Enviamos los primeros 5
-        for (const p of partidos.slice(0, 5)) {
-            const home = p.teams.home.name;
-            const away = p.teams.away.name;
-            const status = p.fixture.status.short;
-            const score = p.goals.home !== null ? `(${p.goals.home}-${p.goals.away})` : '';
+        // Mostramos los primeros 5 de la lista
+        for (const m of matches.slice(0, 5)) {
+            const home = m.homeTeam.name;
+            const away = m.awayTeam.name;
+            const date = new Date(m.utcDate).toLocaleString('es-PE', { timeZone: 'America/Lima' });
 
-            // Limpiamos nombres para evitar errores en el botón
-            const safeHome = home.replace(/[|]/g, ''); 
-            const safeAway = away.replace(/[|]/g, '');
-
-            const txt = `🏆 *${p.league.name}*\n⚽ *${home}* vs *${away}* ${score}\n⏱️ Estado: ${status}`;
+            const txt = `🏟️ *${home}* vs *${away}*\n📅 ${date}`;
             
             bot.sendMessage(chatId, txt, {
                 parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [[
-                        { text: '🧠 Predecir con IA', callback_data: `analyze|${safeHome}|${safeAway}` }
+                        { text: '🧠 Análisis de Apuestas IA', callback_data: `analyze|${home}|${away}` }
                     ]]
                 }
             });
         }
     } catch (e) {
         console.error(e);
-        bot.sendMessage(chatId, "❌ Error al conectar con API Fútbol (Revisa tu API Key).");
+        bot.sendMessage(chatId, "❌ Error al obtener datos. Verifica tu nueva API Key.");
     }
 }
 
-async function generarAnalisisApuestas(chatId, home, away) {
-    bot.sendMessage(chatId, `🔮 *Consultando a la IA sobre ${home} vs ${away}...*`, { parse_mode: 'Markdown' });
-    bot.sendChatAction(chatId, 'typing');
-    
+// --- IA TIPSTER ---
+async function generarAnalisisIA(chatId, home, away) {
+    bot.sendMessage(chatId, `🔮 Analizando ${home} vs ${away}...`);
     try {
-        const prompt = `Eres un experto analista deportivo. 
-        Analiza el partido de fútbol: ${home} (Local) vs ${away} (Visitante).
-        Dame un pronóstico breve para apostar.
-        
-        Formato de respuesta:
-        1. 📊 Probabilidad de victoria (Ej: Local 40%, Empate 30%, Visita 30%)
-        2. 💎 La Apuesta recomendada.
-        3. 🎯 Marcador exacto probable.
-        
-        Sé directo y usa emojis.`;
+        const prompt = `Eres un experto en apuestas deportivas. Analiza el partido ${home} vs ${away}. 
+        Dame: 
+        1. Porcentajes de probabilidad (Local/Empate/Visita).
+        2. Pronóstico de marcador.
+        3. Recomendación de apuesta (Stake alto/bajo).
+        Responde corto y con emojis.`;
 
         const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
-
-        bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
-
+        bot.sendMessage(chatId, `📊 *PRONÓSTICO IA:*\n\n${result.response.text()}`, { parse_mode: 'Markdown' });
     } catch (e) {
-        console.error("Error Gemini:", e);
-        // AQUÍ ESTÁ LA CLAVE: Le enviamos el error real al usuario
-        let errorMsg = e.message || JSON.stringify(e);
-        if (errorMsg.includes("API key not valid")) errorMsg = "La API Key de Google Gemini es inválida o falta en Render.";
-        if (errorMsg.includes("SAFETY")) errorMsg = "La IA bloqueó la respuesta por seguridad (tema apuestas).";
-        
-        bot.sendMessage(chatId, `❌ Error técnico de la IA:\n\`${errorMsg}\``, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, "❌ La IA no pudo responder. Revisa la GEMINI_API_KEY.");
     }
 }
 
-http.createServer((req, res) => res.end('Bot OK')).listen(process.env.PORT || 3000);
+http.createServer((req, res) => res.end('Bot Operativo')).listen(process.env.PORT || 3000);
