@@ -5,7 +5,7 @@ const { GoogleGenAI } = require("@google/genai");
 const http = require('http');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
-const fs = require('fs'); // Para crear el archivo Excel/CSV
+const fs = require('fs');
 
 // --- 1. CONFIGURACIÓN ---
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -15,7 +15,7 @@ const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 let adminChatId = null; 
 
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('🟢 MongoDB: Versión Pro V3.0 Activa'))
+    .then(() => console.log('🟢 Bot Tipster V3.1: Nuevas Ligas Activas'))
     .catch(err => console.error('🔴 Error BD:', err));
 
 // --- 2. MODELO DE DATOS ---
@@ -30,22 +30,26 @@ const PrediccionSchema = new mongoose.Schema({
     resultadoReal: { type: String, default: null },
     estado: { type: String, default: 'PENDIENTE' }, 
     montoApostado: { type: Number, default: 0 },
-    confianza: { type: String, default: '🟡' }, // Nuevo campo Semáforo
+    confianza: { type: String, default: '🟡' },
     createdAt: { type: Date, default: Date.now }
 });
 const Prediccion = mongoose.model('Prediccion', PrediccionSchema);
 
-// --- 3. MENÚ PRINCIPAL ---
+// --- 3. MENÚ PRINCIPAL (ACTUALIZADO CON FRANCIA Y CHAMPIONS) ---
 bot.onText(/\/start/, (msg) => {
     adminChatId = msg.chat.id;
-    bot.sendMessage(msg.chat.id, "💎 *Tipster IA V3.0 - Suite Profesional*\n\nNuevas funciones:\n🟢 Semáforo de Confianza\n📥 Exportación a Excel\n📋 Radar de Jugadores Clave", {
+    bot.sendMessage(msg.chat.id, "⚽ *Central de Apuestas IA V3.1*\nSelecciona una competición para analizar:", {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
+                // Ligas Top Europa
                 [{ text: '🇪🇸 La Liga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
-                [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇧🇷 Brasileirao', callback_data: 'comp_BSA' }],
-                [{ text: '📊 AUDITAR', callback_data: 'ver_resumen' }, { text: '💰 BANCO', callback_data: 'ver_banco' }],
-                [{ text: '📥 EXPORTAR EXCEL', callback_data: 'exportar_excel' }]
+                [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }],
+                [{ text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }, { text: '🏆 Champions', callback_data: 'comp_CL' }],
+                
+                // Otras Ligas y Herramientas
+                [{ text: '🇧🇷 Brasileirao', callback_data: 'comp_BSA' }, { text: '📊 AUDITAR', callback_data: 'ver_resumen' }],
+                [{ text: '💰 MI BANCO', callback_data: 'ver_banco' }, { text: '📥 EXPORTAR EXCEL', callback_data: 'exportar_excel' }]
             ]
         }
     });
@@ -55,12 +59,45 @@ bot.onText(/\/banco/, (msg) => mostrarBanco(msg.chat.id));
 bot.onText(/\/resumen/, (msg) => verificarResultados(msg.chat.id));
 bot.onText(/\/exportar/, (msg) => exportarDatos(msg.chat.id));
 
-// --- 4. CRON JOB: ALARMA 6:00 AM (Igual que antes) ---
+// --- 4. CRON JOB: ALARMA 6:00 AM (ACTUALIZADO) ---
 cron.schedule('0 6 * * *', async () => {
     if (!adminChatId) return;
-    // (Lógica de alarma matutina resumida para ahorrar espacio, funciona igual)
-    bot.sendMessage(adminChatId, "🌅 *ALERTA MATUTINA:* Buscando las fijas del día...");
-    // ... aquí iría la lógica de búsqueda diaria
+    
+    // Agregamos FL1 (Francia) y CL (Champions) a la búsqueda matutina
+    const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL']; 
+    let partidosHoy = [];
+    
+    try {
+        const hoy = new Date().toISOString().split('T')[0];
+        
+        for (const code of ligas) {
+            const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
+                headers: footballHeaders,
+                params: { dateFrom: hoy, dateTo: hoy }
+            });
+            if (res.data.matches) {
+                // Añadimos nombre de la liga para que la IA sepa de dónde es
+                const matchesConLiga = res.data.matches.map(m => ({...m, competitionName: m.competition.name}));
+                partidosHoy = [...partidosHoy, ...matchesConLiga];
+            }
+        }
+
+        if (partidosHoy.length === 0) {
+            return bot.sendMessage(adminChatId, "☕ Hoy no hay partidos destacados en las grandes ligas.");
+        }
+
+        const listaPartidos = partidosHoy.map(m => `[${m.competitionName}] ${m.homeTeam.name} vs ${m.awayTeam.name}`).join("\n");
+        
+        const promptDia = `Analiza estos partidos de hoy:\n${listaPartidos}\n\nSelecciona SOLO los 2 más seguros.
+        Formato:
+        ☀️ *LA FIJA:* (Partido y Pick)
+        🛡️ *LA SEGURA:* (Partido y Pick)
+        ⚠️ (Breve razón)`;
+
+        const response = await ai.models.generateContent({ model: "gemini-3-flash-preview", contents: promptDia });
+        bot.sendMessage(adminChatId, `🗞️ *INFORME MATUTINO (06:00 AM)*\n\n${response.text}`, { parse_mode: 'Markdown' });
+
+    } catch (e) { console.error("Error Cron:", e); }
 }, { scheduled: true, timezone: "America/Lima" });
 
 // --- 5. MANEJADOR DE EVENTOS ---
@@ -78,7 +115,6 @@ bot.on('callback_query', async (query) => {
         await procesarAnalisis(chatId, home, away, code, date);
     } 
     else if (data.startsWith('lineup|')) {
-        // Lógica del Radar de Alineaciones
         const [_, home, away] = data.split('|');
         await chequearAlineaciones(chatId, home, away);
     }
@@ -92,72 +128,71 @@ async function listarPartidos(chatId, code) {
     try {
         const hoy = new Date();
         const limite = new Date();
-        limite.setDate(hoy.getDate() + 7);
+        limite.setDate(hoy.getDate() + 14); // Aumenté a 14 días para ver Champions con antelación
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders,
             params: { dateFrom: hoy.toISOString().split('T')[0], dateTo: limite.toISOString().split('T')[0], status: 'SCHEDULED' }
         });
         
         const matches = res.data.matches || [];
-        if (matches.length === 0) return bot.sendMessage(chatId, "⚠️ No hay partidos pronto.");
+        if (matches.length === 0) return bot.sendMessage(chatId, "⚠️ No hay partidos programados pronto para esta competición.");
 
-        for (const m of matches.slice(0, 5)) {
+        // Mostramos hasta 6 partidos
+        for (const m of matches.slice(0, 6)) {
             const home = m.homeTeam.name;
             const away = m.awayTeam.name;
             const fecha = m.utcDate.split('T')[0];
             const idPartido = `${home}-${away}-${fecha}`;
             
             const existe = await Prediccion.exists({ partidoId: idPartido });
-            const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar (Semáforo)";
+            // Recuperamos el emoji de confianza si existe
+            let btnText = "🧠 Analizar";
+            if (existe) {
+                const doc = await Prediccion.findOne({ partidoId: idPartido });
+                btnText = `✅ Ver Pick (${doc.confianza || '🟡'})`;
+            }
 
             bot.sendMessage(chatId, `🏟️ *${home}* vs *${away}*\n📅 ${fecha}`, {
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `analyze|${home.substring(0,15)}|${away.substring(0,15)}|${code}|${fecha}` }]] }
             });
         }
-    } catch (e) { bot.sendMessage(chatId, "❌ Error API Fútbol."); }
+    } catch (e) { bot.sendMessage(chatId, "❌ Error API (Posiblemente sin cobertura o límite alcanzado)."); }
 }
 
-// --- MEJORA 1: ANÁLISIS CON SEMÁFORO ---
 async function procesarAnalisis(chatId, home, away, code, date) {
     const idUnico = `${home}-${away}-${date}`;
     const cached = await Prediccion.findOne({ partidoId: idUnico });
     
-    // Si ya existe, mostramos el botón de Radar de Alineaciones también
     if (cached) {
-        return bot.sendMessage(chatId, `📂 *ANÁLISIS GUARDADO:*\n\n${cached.analisisIA}`, { 
+        return bot.sendMessage(chatId, `📂 *ANÁLISIS GUARDADO (${cached.confianza || '🟡'}):*\n\n${cached.analisisIA}`, { 
             parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: [[{ text: "🔍 Radar: Jugadores Clave", callback_data: `lineup|${home}|${away}` }]] }
         });
     }
 
-    bot.sendMessage(chatId, `🚦 *Calculando nivel de riesgo y confianza...*`);
+    bot.sendMessage(chatId, `🚦 *Analizando ${code === 'CL' ? 'Champions League' : 'Liga'}...*`);
     bot.sendChatAction(chatId, 'typing');
 
     const historial = await Prediccion.find({ liga: code, estado: { $ne: 'PENDIENTE' } }).limit(5);
     const racha = await obtenerRacha(code);
 
     try {
-        const prompt = `Actúa como Tipster Pro. Partido: ${home} vs ${away}. Racha Liga: ${racha}.
+        const prompt = `Actúa como Tipster Pro. Partido: ${home} vs ${away}. Competición: ${code}. Racha Liga: ${racha}.
         
-        Tu tarea es clasificar el riesgo y dar el pick.
-        Formato OBLIGATORIO:
+        Clasifica el riesgo y da el pick. Formato OBLIGATORIO:
         
-        [EMOJI_SEMÁFORO] *NIVEL:* (Alta/Media/Baja)
+        [EMOJI] *NIVEL:* (Alta/Media/Baja)
         💎 *PICK:* (Tu predicción)
         💰 *INVERSIÓN:* (En S/. para banco de 1000)
-        🛡️ *CONDICIÓN:* (Ej: "Solo si juega Vinicius")
+        🛡️ *CONDICIÓN:* (Ej: "Solo si juega Mbappe")
         🎯 *MARCADOR:* (Resultado exacto)
         
-        Usa:
-        🟢 para Alta Confianza (Stake alto)
-        🟡 para Media Confianza
-        🔴 para Baja Confianza (Riesgo alto)`;
+        Usa: 🟢 (Alta), 🟡 (Media), 🔴 (Baja/Riesgo).`;
 
         const response = await ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt });
         const texto = response.text;
         
-        // Detectar el color para guardarlo en BD
         let confianza = '🟡';
         if (texto.includes('🟢')) confianza = '🟢';
         if (texto.includes('🔴')) confianza = '🔴';
@@ -180,72 +215,47 @@ async function procesarAnalisis(chatId, home, away, code, date) {
     } catch (e) { bot.sendMessage(chatId, "❌ Error IA."); }
 }
 
-// --- MEJORA 2: RADAR DE ALINEACIONES ---
 async function chequearAlineaciones(chatId, home, away) {
     bot.sendChatAction(chatId, 'typing');
-    // Como la API free no siempre da alineaciones, usamos la IA para decirnos QUIÉN importa
-    const prompt = `Partido: ${home} vs ${away}.
-    Dime SOLO los 2 jugadores más importantes de cada equipo.
-    Si uno de ellos no juega, ¿cómo afecta a la apuesta? (Responde en 40 palabras max)`;
-    
+    const prompt = `Partido: ${home} vs ${away}. Dime los 2 jugadores más claves de cada equipo y qué pasa si no juegan. Breve (40 palabras).`;
     try {
         const response = await ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt });
-        bot.sendMessage(chatId, `🕵️ *RADAR DE JUGADORES CLAVE:*\n\n${response.text}\n\n_⚠️ Revisa alineaciones oficiales 1 hora antes del partido._`, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, "❌ No pude analizar los jugadores clave.");
-    }
+        bot.sendMessage(chatId, `🕵️ *RADAR CLAVE:*\n\n${response.text}`, { parse_mode: 'Markdown' });
+    } catch (e) { bot.sendMessage(chatId, "❌ Error Radar."); }
 }
 
-// --- MEJORA 3: EXPORTAR A EXCEL (CSV) ---
 async function exportarDatos(chatId) {
-    bot.sendMessage(chatId, "🖨️ *Generando reporte financiero...*");
+    bot.sendMessage(chatId, "🖨️ *Exportando...*");
     bot.sendChatAction(chatId, 'upload_document');
-
     const predicciones = await Prediccion.find({}).sort({ fechaPartido: -1 });
+    if (predicciones.length === 0) return bot.sendMessage(chatId, "Sin datos.");
 
-    if (predicciones.length === 0) return bot.sendMessage(chatId, "No hay datos para exportar.");
-
-    // Crear contenido CSV
-    let csvContent = "FECHA,PARTIDO,PICK,INVERSION (S/.),RESULTADO REAL,ESTADO,GANANCIA NETA\n";
-    
+    let csvContent = "FECHA,PARTIDO,PICK,INVERSION,RESULTADO,ESTADO,GANANCIA\n";
     predicciones.forEach(p => {
-        const titulo = `${p.equipoLocal} vs ${p.equipoVisita}`;
-        // Limpiamos el pick de saltos de línea para el CSV
-        const pickLimpio = p.pickIA.split('\n')[1] || "Pick General"; 
-        
-        let ganancia = 0;
-        if (p.estado === 'GANADA') ganancia = (p.montoApostado * 0.80).toFixed(2);
-        if (p.estado === 'PERDIDA') ganancia = (p.montoApostado * -1).toFixed(2);
-
-        csvContent += `${p.fechaPartido},"${titulo}","${pickLimpio.replace(/"/g, '""')}",${p.montoApostado},${p.resultadoReal || '-'},${p.estado},${ganancia}\n`;
+        const pick = (p.pickIA.split('\n')[1] || "Pick").replace(/"/g, '""'); 
+        let ganancia = p.estado === 'GANADA' ? (p.montoApostado * 0.80) : (p.estado === 'PERDIDA' ? -p.montoApostado : 0);
+        csvContent += `${p.fechaPartido},"${p.equipoLocal} vs ${p.equipoVisita}","${pick}",${p.montoApostado},${p.resultadoReal || '-'},${p.estado},${ganancia.toFixed(2)}\n`;
     });
 
-    // Guardar temporalmente
-    const filePath = './Reporte_Apuestas.csv';
+    const filePath = './Reporte.csv';
     fs.writeFileSync(filePath, csvContent);
-
-    // Enviar y borrar
     await bot.sendDocument(chatId, filePath);
-    fs.unlinkSync(filePath); // Limpieza
+    fs.unlinkSync(filePath);
 }
 
-// --- FUNCIONES DE SOPORTE (Banco, Verificación, etc.) ---
 async function mostrarBanco(chatId) {
-    // (Mismo código que antes)
     const todos = await Prediccion.find({ estado: { $ne: 'PENDIENTE' } });
-    if (todos.length === 0) return bot.sendMessage(chatId, "📉 Sin historial finalizado.");
-    let ganadas = 0, perdidas = 0, solesGanados = 0, solesPerdidos = 0;
+    if (todos.length === 0) return bot.sendMessage(chatId, "📉 Sin historial.");
+    let ganadas = 0, perdidas = 0, balance = 0;
     todos.forEach(p => {
-        if (p.estado === 'GANADA') { ganadas++; solesGanados += (p.montoApostado * 0.80); } 
-        else if (p.estado === 'PERDIDA') { perdidas++; solesPerdidos += p.montoApostado; }
+        if (p.estado === 'GANADA') { ganadas++; balance += (p.montoApostado * 0.80); } 
+        else if (p.estado === 'PERDIDA') { perdidas++; balance -= p.montoApostado; }
     });
-    const balance = solesGanados - solesPerdidos;
     const emoji = balance >= 0 ? "📈" : "📉";
-    bot.sendMessage(chatId, `🏦 *ESTADO DE CUENTA*\n✅ ${ganadas} | ❌ ${perdidas}\n${emoji} *NETO: S/. ${balance.toFixed(2)}*`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `🏦 *BANCO*\n✅ ${ganadas} | ❌ ${perdidas}\n${emoji} *NETO: S/. ${balance.toFixed(2)}*`, { parse_mode: 'Markdown' });
 }
 
 async function verificarResultados(chatId) {
-    // (Mismo código Juez V2 mejorado)
     bot.sendMessage(chatId, "🕵️ *Auditando...*");
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
     if (pendientes.length === 0) return bot.sendMessage(chatId, "✅ Todo al día.");
@@ -272,7 +282,7 @@ async function verificarResultados(chatId) {
             }
         } catch (e) {}
     }
-    bot.sendMessage(chatId, "✅ Auditoría finalizada. Revisa tu /banco.");
+    bot.sendMessage(chatId, "✅ Auditoría lista.");
 }
 
 async function obtenerRacha(code) {
@@ -284,4 +294,4 @@ async function obtenerRacha(code) {
     } catch (e) { return "Sin datos."; }
 }
 
-http.createServer((req, res) => res.end('Bot V3.0 Online')).listen(process.env.PORT || 10000);
+http.createServer((req, res) => res.end('Bot V3.1 Online')).listen(process.env.PORT || 10000);
