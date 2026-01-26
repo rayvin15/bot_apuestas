@@ -9,21 +9,24 @@ const fs = require('fs');
 
 // --- 1. CONFIGURACIÓN ---
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Modelo rápido y avanzado
 const MODELO_USADO = "gemini-3-flash-preview"; 
 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-// --- 2. SISTEMA DE SEGURIDAD (ANTI-SATURACIÓN) ---
+// --- 2. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO 429) ---
 let lastRequestTime = 0;
-const COOLDOWN_MS = 6000; // 6 seg de espera
+const COOLDOWN_MS = 6000; // 6 segundos obligatorios entre peticiones a la IA
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function llamarGeminiSeguro(prompt) {
+    // Escudo de Tiempo
     const tiempoDesdeUltima = Date.now() - lastRequestTime;
     if (tiempoDesdeUltima < COOLDOWN_MS) {
-        await delay(COOLDOWN_MS - tiempoDesdeUltima);
+        const espera = COOLDOWN_MS - tiempoDesdeUltima;
+        await delay(espera);
     }
 
     try {
@@ -35,6 +38,7 @@ async function llamarGeminiSeguro(prompt) {
         lastRequestTime = Date.now();
         
         let text = "";
+        // Extracción segura para la librería nueva
         if (response.text && typeof response.text === 'function') text = response.text();
         else if (response.text) text = response.text;
         else if (response.candidates?.[0]?.content?.parts?.[0]?.text) text = response.candidates[0].content.parts[0].text;
@@ -54,6 +58,7 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
     try {
         await bot.sendMessage(chatId, texto, { ...opciones, parse_mode: 'Markdown' });
     } catch (error) {
+        // Si falla el Markdown (negritas mal cerradas), enviamos texto plano
         if (error.message.includes("can't parse entities") || error.message.includes("Bad Request")) {
             await bot.sendMessage(chatId, "⚠️ _Formato simplificado:_\n" + texto, opciones);
         } else {
@@ -64,7 +69,7 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
 
 // --- 3. BASE DE DATOS ---
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('🟢 Bot V6.1 (Fix Undefined): DB Conectada'))
+    .then(() => console.log('🟢 Bot V6.2 (Champions & Fixes): DB Conectada'))
     .catch(err => console.error('🔴 Error BD:', err));
 
 const PrediccionSchema = new mongoose.Schema({
@@ -80,21 +85,24 @@ const PrediccionSchema = new mongoose.Schema({
 const Prediccion = mongoose.model('Prediccion', PrediccionSchema);
 const Config = mongoose.model('Config', new mongoose.Schema({ key: String, value: String }));
 
-// --- 4. COMANDOS PRINCIPALES ---
+// --- 4. MENÚ PRINCIPAL ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `⚽ *Tipster AI V6.1 - Fixed*
+    enviarMensajeSeguro(chatId, `⚽ *Tipster AI V6.2 - Full Leagues*
     
-✅ Picks Guardados Correctamente
-✅ Reporte 6:00 AM
-✅ Gestión de Banca`, {
+✅ Champions League y Ligue 1 Activas
+✅ Corrección de picks vacíos
+✅ Reporte automático 6:00 AM`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
                 [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }],
-                [{ text: '⏳ MIS PENDIENTES', callback_data: 'ver_pendientes' }, { text: '💰 BANCA', callback_data: 'ver_banca' }],
+                // AQUÍ ESTÁN TUS LIGAS SOLICITADAS:
+                [{ text: '🏆 Champions', callback_data: 'comp_CL' }, { text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }],
+                
+                [{ text: '⏳ PENDIENTES', callback_data: 'ver_pendientes' }, { text: '💰 BANCA', callback_data: 'ver_banca' }],
                 [{ text: '📊 AUDITAR', callback_data: 'ver_auditoria' }, { text: '📥 EXPORTAR', callback_data: 'exportar_excel' }]
             ]
         }
@@ -108,28 +116,33 @@ cron.schedule('0 6 * * *', async () => {
 }, { scheduled: true, timezone: "America/Lima" });
 
 async function ejecutarReporteSeguro(chatId) {
-    enviarMensajeSeguro(chatId, "☀️ *Buenos días. Buscando oportunidades...*");
-    const ligas = ['PL', 'PD', 'SA', 'BL1'];
+    enviarMensajeSeguro(chatId, "☀️ *Buenos días. Escaneando TODAS las ligas...*");
+    
+    // Lista completa de ligas para el reporte
+    const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL'];
     let partidos = [];
     const hoy = new Date().toISOString().split('T')[0];
 
     try {
+        // Paso 1: Recopilar partidos (sin gastar IA)
         for (const code of ligas) {
-            await delay(1000); 
+            await delay(1000); // Pausa API Fútbol
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
                 headers: footballHeaders, params: { dateFrom: hoy, dateTo: hoy }
             });
             if (res.data.matches) partidos = [...partidos, ...res.data.matches];
         }
 
-        if (partidos.length === 0) return enviarMensajeSeguro(chatId, "☕ No hay partidos destacados hoy.");
+        if (partidos.length === 0) return enviarMensajeSeguro(chatId, "☕ No hay partidos importantes hoy.");
 
+        // Paso 2: Crear lista de texto
         const listaTexto = partidos.slice(0, 15).map(m => `• ${m.homeTeam.name} vs ${m.awayTeam.name} (${m.competition.name})`).join("\n");
 
-        const prompt = `Analiza hoy:
+        // Paso 3: Una sola llamada a Gemini (Picks Seguros)
+        const prompt = `Analiza los partidos de hoy:
 ${listaTexto}
 
-Dame SOLO las 3 apuestas más seguras.
+Dame SOLO las 3 apuestas más seguras (Stake Alto).
 Formato obligatorio:
 🏆 *LIGA*
 ⚔️ Partido: Local vs Visita
@@ -178,7 +191,7 @@ async function listarPartidos(chatId, code) {
         });
 
         const matches = res.data.matches || [];
-        if (matches.length === 0) return enviarMensajeSeguro(chatId, "⚠️ No hay partidos hoy.");
+        if (matches.length === 0) return enviarMensajeSeguro(chatId, "⚠️ No hay partidos hoy en esta liga.");
 
         for (const m of matches.slice(0, 4)) { 
             const h = m.homeTeam.name;
@@ -195,7 +208,7 @@ async function listarPartidos(chatId, code) {
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Error API Fútbol."); }
 }
 
-// --- CORE DEL FIX: ANALISIS ROBUSTO ---
+// --- CORE DEL FIX: ANALISIS ROBUSTO (NO MÁS UNDEFINED) ---
 async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     const id = `${home}-${away}-${date}`;
     const cached = await Prediccion.findOne({ partidoId: id });
@@ -213,12 +226,11 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     try {
         const racha = await obtenerRacha(code, home, away);
         
-        // Prompt reforzado para JSON
         const prompt = `Actúa como Tipster Experto.
         Partido: ${home} vs ${away}.
         Historial: ${racha}.
         
-        Tu misión: Generar un JSON válido con la predicción.
+        Tu misión: Generar un JSON válido.
         Estructura OBLIGATORIA:
         {
           "pick": "Solo el mercado (ej: Gana Local)",
@@ -228,14 +240,13 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
           "marcador": "1-0"
         }
         
-        NO añadas texto antes ni después del JSON.`;
+        NO añadas texto antes ni después.`;
 
         const rawText = await llamarGeminiSeguro(prompt);
         
-        // --- AQUÍ ESTÁ EL ARREGLO PRINCIPAL ---
+        // Usamos el extractor inteligente
         let datos = extraerDatosDeTexto(rawText); 
 
-        // Generamos el mensaje bonito para el usuario
         const msgFinal = `🎯 *PICK:* ${datos.pick}
 ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 💰 *Stake:* S/. ${datos.stake}
@@ -245,8 +256,8 @@ ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 
         const nueva = new Prediccion({
             partidoId: id, equipoLocal: home, equipoVisita: away, fechaPartido: date,
-            analisisIA: msgFinal, // Guardamos el mensaje bonito completo
-            pickIA: datos.pick,   // Guardamos SOLO el pick limpio
+            analisisIA: msgFinal, // Mensaje completo
+            pickIA: datos.pick,   // Pick limpio para BD
             liga: code,
             montoApostado: datos.stake, confianza: datos.confianza
         });
@@ -260,43 +271,40 @@ ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Error: " + e.message); }
 }
 
-// FUNCIÓN AUXILIAR PARA LIMPIAR RESPUESTAS "SUCIAS" DE GEMINI
+// FUNCIÓN DE LIMPIEZA (FIX UNDEFINED)
 function extraerDatosDeTexto(rawText) {
     let datos = { pick: "Ver Análisis", confianza: "🟡", stake: 20, razon: "", marcador: "?" };
 
     try {
-        // 1. Intentar limpiar bloques de código
+        // Limpiar bloques de código markdown
         let jsonClean = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
         
-        // 2. Buscar el primer '{' y último '}' para ignorar intros
+        // Buscar el objeto JSON real dentro del texto
         const firstOpen = jsonClean.indexOf('{');
         const lastClose = jsonClean.lastIndexOf('}');
         
         if (firstOpen !== -1 && lastClose !== -1) {
             jsonClean = jsonClean.substring(firstOpen, lastClose + 1);
             const parsed = JSON.parse(jsonClean);
-            // Validamos que tenga campos mínimos
             if (parsed.pick) datos = { ...datos, ...parsed };
             return datos;
         }
     } catch (e) {
-        console.log("Fallo JSON, intentando extracción manual...");
+        console.log("Fallo JSON, usando extracción manual por Regex...");
     }
 
-    // 3. Si falla JSON, usamos Regex para "leer" el texto plano
-    // Esto salva los picks cuando Gemini decide no mandar JSON
+    // Extracción manual si Gemini no manda JSON
     const pickMatch = rawText.match(/"?pick"?:\s*"([^"]+)"/i) || rawText.match(/Pick:\s*(.+)/i);
     const stakeMatch = rawText.match(/"?stake"?:\s*(\d+)/i) || rawText.match(/Stake:\s*(\d+)/i);
     const confMatch = rawText.match(/"?confianza"?:\s*"([^"]+)"/i);
     
-    if (pickMatch) datos.pick = pickMatch[1];
-    else datos.pick = rawText.substring(0, 50).replace(/\n/g, ' '); // Peor caso: toma los primeros 50 caracteres
+    if (pickMatch) datos.pick = pickMatch[1].replace(/["},]/g, '').trim(); // Limpieza extra
+    else datos.pick = rawText.substring(0, 50).replace(/\n/g, ' ');
 
     if (stakeMatch) datos.stake = parseInt(stakeMatch[1]);
     if (confMatch) datos.confianza = confMatch[1];
     
-    // Extraer razón del texto si no es JSON
-    if (!datos.razon && rawText.length > 50) datos.razon = "Análisis generado (ver detalles arriba)";
+    if (!datos.razon && rawText.length > 50) datos.razon = "Ver detalles arriba.";
 
     return datos;
 }
@@ -309,8 +317,8 @@ async function verPendientes(chatId) {
 
     let mensaje = `⏳ *PENDIENTES (${pendientes.length})*\n\n`;
     pendientes.forEach((p, index) => {
-        // Ahora p.pickIA debería estar limpio gracias a extraerDatosDeTexto
         mensaje += `*${index + 1}.* ${p.equipoLocal} vs ${p.equipoVisita}\n`;
+        // Aquí usamos p.pickIA que ahora sí estará limpio
         mensaje += `🎯 ${p.pickIA}\n`; 
         mensaje += `💰 Stake: ${p.montoApostado} | 📅 ${p.fechaPartido}\n`;
         mensaje += `-------------------\n`;
@@ -346,6 +354,7 @@ async function ejecutarAuditoria(chatId) {
             const match = res.data.matches.find(m => m.homeTeam.name === p.equipoLocal);
             if (match && match.score.fullTime.home !== null) {
                 const resultado = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
+                // Juez IA determina si ganó
                 const prompt = `Pick: "${p.pickIA}". Resultado: ${p.equipoLocal} ${resultado} ${p.equipoVisita}. ¿GANADA o PERDIDA?`;
                 const veredicto = await llamarGeminiSeguro(prompt);
                 
@@ -402,4 +411,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V6.1 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V6.2 Full Online'); }).listen(PORT);
