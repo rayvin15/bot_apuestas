@@ -1,30 +1,27 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const { GoogleGenAI } = require("@google/genai");
+const { GoogleGenerativeAI } = require("@google/genai"); // Cambio clave aquí
 const http = require('http');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
 const fs = require('fs');
 
 // --- 1. CONFIGURACIÓN ---
-const genAI = new GoogleGenAI(process.env.GEMINI_API_KEY);
+// Usamos GoogleGenerativeAI directamente
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('🟢 Bot Tipster V3.3: Ligas Europeas y Persistencia OK'))
+    .then(() => console.log('🟢 Bot Tipster V3.4: IA Corregida y Lista'))
     .catch(err => console.error('🔴 Error BD:', err));
 
 // --- 2. MODELOS DE DATOS ---
 const PrediccionSchema = new mongoose.Schema({
     partidoId: { type: String, unique: true },
-    equipoLocal: String,
-    equipoVisita: String,
-    fechaPartido: String,
-    analisisIA: String,
-    pickIA: String, 
-    liga: String,
+    equipoLocal: String, equipoVisita: String, fechaPartido: String,
+    analisisIA: String, pickIA: String, liga: String,
     resultadoReal: { type: String, default: null },
     estado: { type: String, default: 'PENDIENTE' }, 
     montoApostado: { type: Number, default: 0 },
@@ -36,12 +33,12 @@ const Prediccion = mongoose.model('Prediccion', PrediccionSchema);
 const ConfigSchema = new mongoose.Schema({ key: String, value: String });
 const Config = mongoose.model('Config', ConfigSchema);
 
-// --- 3. MENÚ PRINCIPAL (Ligas Actualizadas) ---
+// --- 3. MENÚ PRINCIPAL ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    bot.sendMessage(chatId, "🏆 *Tipster IA V3.3 - Elite*\nLigas: Premier, LaLiga, Serie A, Bundesliga, Ligue 1 y Champions.", {
+    bot.sendMessage(chatId, "🏆 *Tipster IA V3.4 - Versión Estable*\nSe han corregido los errores de comunicación con la IA.", {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
@@ -61,6 +58,7 @@ cron.schedule('0 6 * * *', async () => {
     if (config) ejecutarReporteMatutino(config.value);
 }, { scheduled: true, timezone: "America/Lima" });
 
+// --- FUNCIÓN DE REPORTE MATUTINO ---
 async function ejecutarReporteMatutino(chatId) {
     bot.sendMessage(chatId, "⏰ *Generando informe matutino profesional...*");
     const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'BSA']; 
@@ -81,19 +79,21 @@ async function ejecutarReporteMatutino(chatId) {
         }
 
         if (partidosHoy.length === 0) {
-            return bot.sendMessage(chatId, "☕ *INFORME MATUTINO*\nNo hay partidos destacados para hoy en las ligas seguidas.");
+            return bot.sendMessage(chatId, "☕ *INFORME MATUTINO*\nNo hay partidos destacados hoy en las ligas seguidas.");
         }
 
         const listaPartidos = partidosHoy.map(m => `• ${m.l}: ${m.h} vs ${m.a}`).join("\n");
-        const promptDia = `Eres un Tipster Experto. Analiza estos partidos de hoy:\n${listaPartidos}\n\nSelecciona los 2 más probables (La Fija y La Segura). Indica el PICK y por qué. Usa Markdown.`;
+        const prompt = `Analiza estos partidos de fútbol:\n${listaPartidos}\n\nSelecciona los 2 más probables. Indica PICK y razón breve. Usa Markdown.`;
 
+        // Lógica de generación corregida
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const result = await model.generateContent(promptDia);
+        const result = await model.generateContent(prompt);
         const respuestaIA = result.response.text();
 
         bot.sendMessage(chatId, `🗞️ *INFORME MATUTINO*\n\n${respuestaIA}`, { parse_mode: 'Markdown' });
 
     } catch (e) {
+        console.error(e);
         bot.sendMessage(chatId, "❌ Error en reporte: " + e.message);
     }
 }
@@ -153,7 +153,7 @@ async function procesarAnalisis(chatId, home, away, code, date) {
     bot.sendChatAction(chatId, 'typing');
     try {
         const racha = await obtenerRacha(code);
-        const prompt = `Tipster Experto. Analiza ${home} vs ${away} (${code}). Racha: ${racha}. Da nivel (🟢, 🟡, 🔴), PICK, INVERSIÓN S/. y MARCADOR.`;
+        const prompt = `Analiza ${home} vs ${away} (${code}). Racha: ${racha}. Da nivel (🟢, 🟡, 🔴), PICK, INVERSIÓN S/. y MARCADOR.`;
         
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const result = await model.generateContent(prompt);
@@ -168,7 +168,7 @@ async function procesarAnalisis(chatId, home, away, code, date) {
             montoApostado: monto, confianza: confianza
         });
         await nueva.save();
-        bot.sendMessage(chatId, `📝 *NUEVO:* ${texto}`, { 
+        bot.sendMessage(chatId, `📝 *ANÁLISIS:* ${texto}`, { 
             parse_mode: 'Markdown',
             reply_markup: { inline_keyboard: [[{ text: "🔍 Radar Clave", callback_data: `lineup|${home}|${away}` }]] }
         });
@@ -232,4 +232,4 @@ async function obtenerRacha(code) {
     } catch (e) { return "Sin racha."; }
 }
 
-http.createServer((req, res) => res.end('Bot Online V3.3')).listen(process.env.PORT || 10000);
+http.createServer((req, res) => res.end('Bot Online V3.4')).listen(process.env.PORT || 10000);
