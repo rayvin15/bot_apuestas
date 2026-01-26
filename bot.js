@@ -59,46 +59,71 @@ bot.onText(/\/banco/, (msg) => mostrarBanco(msg.chat.id));
 bot.onText(/\/resumen/, (msg) => verificarResultados(msg.chat.id));
 bot.onText(/\/exportar/, (msg) => exportarDatos(msg.chat.id));
 
-// --- 4. CRON JOB: ALARMA 6:00 AM (ACTUALIZADO) ---
-cron.schedule('0 6 * * *', async () => {
-    if (!adminChatId) return;
+
+// --- 4. CRON JOB: PRUEBA 6:30 AM ---
+cron.schedule('30 6 * * *', async () => {
+    if (!adminChatId) {
+        console.log("⚠️ No hay ChatID registrado. Dale /start al bot.");
+        return;
+    }
     
-    // Agregamos FL1 (Francia) y CL (Champions) a la búsqueda matutina
-    const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL']; 
+    console.log("⏰ Ejecutando reporte programado 6:30 AM...");
+    
+    const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'BSA']; 
     let partidosHoy = [];
+    const hoy = new Date().toISOString().split('T')[0];
     
     try {
-        const hoy = new Date().toISOString().split('T')[0];
-        
         for (const code of ligas) {
-            const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
-                headers: footballHeaders,
-                params: { dateFrom: hoy, dateTo: hoy }
-            });
-            if (res.data.matches) {
-                // Añadimos nombre de la liga para que la IA sepa de dónde es
-                const matchesConLiga = res.data.matches.map(m => ({...m, competitionName: m.competition.name}));
-                partidosHoy = [...partidosHoy, ...matchesConLiga];
-            }
+            try {
+                const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
+                    headers: footballHeaders,
+                    params: { dateFrom: hoy, dateTo: hoy }
+                });
+                if (res.data.matches && res.data.matches.length > 0) {
+                    partidosHoy = [...partidosHoy, ...res.data.matches.map(m => ({
+                        h: m.homeTeam.name,
+                        a: m.awayTeam.name,
+                        l: m.competition.name
+                    }))];
+                }
+            } catch (err) { /* Ignorar errores de ligas individuales */ }
         }
 
         if (partidosHoy.length === 0) {
-            return bot.sendMessage(adminChatId, "☕ Hoy no hay partidos destacados en las grandes ligas.");
+            return bot.sendMessage(adminChatId, "☕ *INFORME MATUTINO*\nNo hay partidos destacados para hoy en las ligas seguidas. ¡Día de relax!");
         }
 
-        const listaPartidos = partidosHoy.map(m => `[${m.competitionName}] ${m.homeTeam.name} vs ${m.awayTeam.name}`).join("\n");
+        const listaPartidos = partidosHoy.map(m => `• ${m.l}: ${m.h} vs ${m.a}`).join("\n");
         
-        const promptDia = `Analiza estos partidos de hoy:\n${listaPartidos}\n\nSelecciona SOLO los 2 más seguros.
-        Formato:
+        const promptDia = `Actúa como Tipster Pro. Analiza estos partidos:\n${listaPartidos}\n\nSelecciona los 2 más seguros.
+        Usa este formato:
         ☀️ *LA FIJA:* (Partido y Pick)
         🛡️ *LA SEGURA:* (Partido y Pick)
-        ⚠️ (Breve razón)`;
+        ⚠️ *DETALLE:* (Explicación breve)`;
 
-        const response = await ai.models.generateContent({ model: "gemini-3-flash-preview", contents: promptDia });
-        bot.sendMessage(adminChatId, `🗞️ *INFORME MATUTINO (06:00 AM)*\n\n${response.text}`, { parse_mode: 'Markdown' });
+        const result = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: promptDia
+        });
 
-    } catch (e) { console.error("Error Cron:", e); }
-}, { scheduled: true, timezone: "America/Lima" });
+        // Forma más segura de extraer el texto en las nuevas versiones de Gemini
+        const respuestaIA = result.response.candidates[0].content.parts[0].text;
+
+        if (!respuestaIA) {
+            bot.sendMessage(adminChatId, "❌ La IA no pudo generar el análisis hoy.");
+        } else {
+            bot.sendMessage(adminChatId, `🗞️ *INFORME MATUTINO (06:30 AM)*\n\n${respuestaIA}`, { parse_mode: 'Markdown' });
+        }
+
+    } catch (e) {
+        console.error("Error en Cron:", e);
+        bot.sendMessage(adminChatId, "❌ Error al generar el informe matutino.");
+    }
+}, {
+    scheduled: true,
+    timezone: "America/Lima"
+});
 
 // --- 5. MANEJADOR DE EVENTOS ---
 bot.on('callback_query', async (query) => {
