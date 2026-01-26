@@ -14,6 +14,48 @@ const ai = new GoogleGenAI({
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
+// Control de rate limiting (evitar exceder 5 RPM y 20 RPD)
+let requestCount = { minute: 0, day: 0, lastMinuteReset: Date.now(), lastDayReset: Date.now() };
+
+async function llamarGeminiConLimite(prompt) {
+    // Resetear contadores si pasó el tiempo
+    const ahora = Date.now();
+    if (ahora - requestCount.lastMinuteReset > 60000) {
+        requestCount.minute = 0;
+        requestCount.lastMinuteReset = ahora;
+    }
+    if (ahora - requestCount.lastDayReset > 86400000) {
+        requestCount.day = 0;
+        requestCount.lastDayReset = ahora;
+    }
+
+    // Verificar límites
+    if (requestCount.minute >= 4) {
+        throw new Error("⏳ Límite de 5 RPM alcanzado. Espera 1 minuto.");
+    }
+    if (requestCount.day >= 18) {
+        throw new Error("⏳ Límite diario alcanzado (20 RPD). Intenta mañana.");
+    }
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-3-flash",
+            contents: prompt
+        });
+        
+        requestCount.minute++;
+        requestCount.day++;
+        console.log(`📊 API Calls: ${requestCount.minute} RPM | ${requestCount.day} RPD`);
+        
+        return response.text;
+    } catch (error) {
+        if (error.message && error.message.includes("RESOURCE_EXHAUSTED")) {
+            throw new Error("❌ Cuota de Gemini agotada. Espera o usa otra API key.");
+        }
+        throw error;
+    }
+}
+
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('🟢 Bot Tipster V3.2: Sistema de Persistencia Activo'))
     .catch(err => console.error('🔴 Error BD:', err));
@@ -43,32 +85,39 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    bot.sendMessage(chatId, "⚽ *Tipster IA V3.2 - Suite Profesional*\nTu ID ha sido vinculado para los reportes de las 6:30 AM.", {
+    bot.sendMessage(chatId, `⚽ *Tipster IA V3.2 - Suite Profesional*
+Tu ID ha sido vinculado para reportes de las 6:30 AM.
+
+⚠️ *Límites API Gemini Free:*
+• 5 análisis por minuto
+• 20 análisis por día
+Usa sabiamente.`, {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 La Liga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
                 [{ text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }, { text: '🏆 Champions', callback_data: 'comp_CL' }],
                 [{ text: '📊 AUDITAR', callback_data: 'ver_resumen' }, { text: '💰 BANCO', callback_data: 'ver_banco' }],
-                [{ text: '📥 EXPORTAR', callback_data: 'exportar_excel' }, { text: '🚨 PROBAR ALARMA', callback_data: 'test_alarma' }]
+                [{ text: '📥 EXPORTAR', callback_data: 'exportar_excel' }, { text: '📈 STATS API', callback_data: 'ver_stats' }]
             ]
         }
     });
 });
 
-// --- 4. CRON JOB: REFORZADO (6:30 AM PERÚ) ---
+// --- 4. CRON JOB DESACTIVADO POR DEFECTO (consume mucha cuota) ---
+// Descomenta si tienes cuota suficiente
+/*
 cron.schedule('30 6 * * *', async () => {
     const config = await Config.findOne({ key: 'adminChatId' });
     if (config) {
         ejecutarReporteMatutino(config.value);
-    } else {
-        console.log("⚠️ No hay ChatID en la BD para el reporte.");
     }
 }, { scheduled: true, timezone: "America/Lima" });
+*/
 
 async function ejecutarReporteMatutino(chatId) {
-    bot.sendMessage(chatId, "⏰ *Generando informe matutino de hoy...*", { parse_mode: 'Markdown' });
-    const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'BSA']; 
+    bot.sendMessage(chatId, "⏰ *Generando informe matutino...*", { parse_mode: 'Markdown' });
+    const ligas = ['PL', 'PD', 'FL1']; // Reducido para ahorrar cuota
     let partidosHoy = [];
     const hoy = new Date().toISOString().split('T')[0];
     
@@ -79,29 +128,25 @@ async function ejecutarReporteMatutino(chatId) {
                 params: { dateFrom: hoy, dateTo: hoy }
             });
             if (res.data.matches && res.data.matches.length > 0) {
-                partidosHoy = [...partidosHoy, ...res.data.matches.map(m => ({
+                partidosHoy = [...partidosHoy, ...res.data.matches.slice(0, 2).map(m => ({
                     h: m.homeTeam.name, a: m.awayTeam.name, l: m.competition.name
                 }))];
             }
         }
 
         if (partidosHoy.length === 0) {
-            return bot.sendMessage(chatId, "☕ *INFORME MATUTINO*\nNo hay partidos destacados para hoy en las ligas seguidas.", { parse_mode: 'Markdown' });
+            return bot.sendMessage(chatId, "☕ Sin partidos destacados hoy.", { parse_mode: 'Markdown' });
         }
 
-        const listaPartidos = partidosHoy.map(m => `• ${m.l}: ${m.h} vs ${m.a}`).join("\n");
-        const promptDia = `Tipster Pro. Analiza estos partidos:\n${listaPartidos}\n\nSelecciona los 2 más seguros (Fija y Segura). Formato Markdown.`;
+        const listaPartidos = partidosHoy.map(m => `• ${m.h} vs ${m.a} (${m.l})`).join("\n");
+        const promptDia = `Analiza rápidamente estos ${partidosHoy.length} partidos y dame los 2 picks más seguros con formato: "🟢/🟡 EQUIPO - Razón breve":\n${listaPartidos}`;
 
-        const response = await ai.models.generateContent({
-            model: "gemini-2.0-flash-exp",
-            contents: promptDia
-        });
-
-        bot.sendMessage(chatId, `🗞️ *INFORME MATUTINO (06:30 AM)*\n\n${response.text}`, { parse_mode: 'Markdown' });
+        const respuesta = await llamarGeminiConLimite(promptDia);
+        bot.sendMessage(chatId, `🗞️ *PICKS DEL DÍA*\n\n${respuesta}`, { parse_mode: 'Markdown' });
 
     } catch (e) {
-        console.error("Error en reporte matutino:", e);
-        bot.sendMessage(chatId, "❌ Error al generar el reporte: " + e.message);
+        console.error("Error reporte:", e);
+        bot.sendMessage(chatId, "❌ " + e.message);
     }
 }
 
@@ -113,7 +158,7 @@ bot.on('callback_query', async (query) => {
     if (data === 'ver_resumen') await verificarResultados(chatId);
     else if (data === 'ver_banco') await mostrarBanco(chatId);
     else if (data === 'exportar_excel') await exportarDatos(chatId);
-    else if (data === 'test_alarma') await ejecutarReporteMatutino(chatId);
+    else if (data === 'ver_stats') await mostrarStatsAPI(chatId);
     else if (data.startsWith('comp_')) await listarPartidos(chatId, data.split('_')[1]);
     else if (data.startsWith('analyze|')) {
         const [_, home, away, code, date] = data.split('|');
@@ -133,7 +178,7 @@ async function listarPartidos(chatId, code) {
     try {
         const hoy = new Date().toISOString().split('T')[0];
         const limite = new Date();
-        limite.setDate(limite.getDate() + 14);
+        limite.setDate(limite.getDate() + 7); // Reducido a 7 días
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders,
             params: { dateFrom: hoy, dateTo: limite.toISOString().split('T')[0], status: 'SCHEDULED' }
@@ -153,35 +198,31 @@ async function listarPartidos(chatId, code) {
         }
     } catch (e) { 
         console.error("Error listando partidos:", e);
-        bot.sendMessage(chatId, "❌ Error API."); 
+        bot.sendMessage(chatId, "❌ Error API Football."); 
     }
 }
 
 async function procesarAnalisis(chatId, home, away, code, date) {
     const idUnico = `${home}-${away}-${date}`;
     const cached = await Prediccion.findOne({ partidoId: idUnico });
-    if (cached) return bot.sendMessage(chatId, `📂 *GUARDADO:*\n\n${cached.analisisIA}`, { parse_mode: 'Markdown' });
+    if (cached) return bot.sendMessage(chatId, `📂 *ANÁLISIS GUARDADO*\n\n${cached.analisisIA}`, { 
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: [[{ text: "🔍 Jugadores Clave", callback_data: `lineup|${home}|${away}` }]] }
+    });
 
     bot.sendChatAction(chatId, 'typing');
     try {
         const racha = await obtenerRacha(code);
-        const prompt = `Tipster Experto. Analiza ${home} vs ${away} (${code}). Racha reciente: ${racha}. 
+        const prompt = `Tipster: ${home} vs ${away}.
+Contexto: ${racha}
 
-Proporciona:
-1. Nivel de confianza: 🟢 (alta), 🟡 (media), 🔴 (baja)
-2. PICK recomendado (victoria local, empate, victoria visitante, over/under, etc.)
-3. INVERSIÓN sugerida en S/. (entre 10 y 100)
-4. MARCADOR probable
-5. Justificación breve
+Dame en 4 líneas:
+1. 🟢/🟡/🔴 + PICK
+2. Inversión S/. (10-50)
+3. Marcador probable
+4. Razón clave`;
 
-Formato Markdown.`;
-
-        const response = await ai.models.generateContent({
-            model: "gemini-2.0-flash-exp",
-            contents: prompt
-        });
-        
-        const texto = response.text;
+        const texto = await llamarGeminiConLimite(prompt);
         
         let confianza = texto.includes('🟢') ? '🟢' : (texto.includes('🔴') ? '🔴' : '🟡');
         const monto = parseInt(texto.match(/S\/\.?\s?(\d+)/)?.[1] || 20);
@@ -199,27 +240,23 @@ Formato Markdown.`;
         });
         await nueva.save();
         
-        bot.sendMessage(chatId, `📝 *NUEVO ANÁLISIS:*\n\n${texto}`, { 
+        bot.sendMessage(chatId, `📝 *ANÁLISIS*\n\n${texto}\n\n_Guardado en BD_`, { 
             parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [[{ text: "🔍 Radar Clave", callback_data: `lineup|${home}|${away}` }]] }
+            reply_markup: { inline_keyboard: [[{ text: "🔍 Jugadores Clave", callback_data: `lineup|${home}|${away}` }]] }
         });
     } catch (e) { 
-        console.error("Error procesando análisis:", e);
-        bot.sendMessage(chatId, "❌ Error IA: " + e.message); 
+        console.error("Error análisis:", e);
+        bot.sendMessage(chatId, "❌ " + e.message); 
     }
 }
 
 async function chequearAlineaciones(chatId, home, away) {
     try {
-        const response = await ai.models.generateContent({
-            model: "gemini-2.0-flash-exp",
-            contents: `Jugadores clave para ${home} vs ${away} y su impacto si no juegan. Respuesta corta en 3-4 líneas.`
-        });
-        
-        bot.sendMessage(chatId, `🕵️ *RADAR:*\n\n${response.text}`, { parse_mode: 'Markdown' });
+        const respuesta = await llamarGeminiConLimite(`Jugadores TOP de ${home} y ${away}. 2 líneas.`);
+        bot.sendMessage(chatId, `🕵️ *RADAR*\n\n${respuesta}`, { parse_mode: 'Markdown' });
     } catch (e) {
-        console.error("Error chequeando alineaciones:", e);
-        bot.sendMessage(chatId, "❌ Error obteniendo radar de jugadores.");
+        console.error("Error radar:", e);
+        bot.sendMessage(chatId, "❌ " + e.message);
     }
 }
 
@@ -239,7 +276,23 @@ async function mostrarBanco(chatId) {
     
     const winRate = todos.length > 0 ? ((ganadas / todos.length) * 100).toFixed(1) : 0;
     
-    bot.sendMessage(chatId, `🏦 *BANCO TIPSTER*\n✅ Ganadas: ${ganadas}\n❌ Perdidas: ${perdidas}\n📊 Win Rate: ${winRate}%\n💰 *NETO: S/. ${balance.toFixed(2)}*`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `🏦 *BANCO TIPSTER*
+✅ Ganadas: ${ganadas}
+❌ Perdidas: ${perdidas}
+📊 Win Rate: ${winRate}%
+💰 *Balance: S/. ${balance.toFixed(2)}*`, { parse_mode: 'Markdown' });
+}
+
+async function mostrarStatsAPI(chatId) {
+    bot.sendMessage(chatId, `📊 *USO DE GEMINI API*
+
+Minuto actual:
+🔹 Llamadas: ${requestCount.minute}/5 RPM
+
+Hoy:
+🔹 Llamadas: ${requestCount.day}/20 RPD
+
+⚠️ Límite gratuito: 20 análisis/día`, { parse_mode: 'Markdown' });
 }
 
 async function exportarDatos(chatId) {
@@ -251,17 +304,17 @@ async function exportarDatos(chatId) {
             csv += `${p.fechaPartido},"${p.equipoLocal} vs ${p.equipoVisita}","${p.confianza}",${p.montoApostado},${p.estado},${gan.toFixed(2)}\n`;
         });
         fs.writeFileSync('./Reporte.csv', csv);
-        await bot.sendDocument(chatId, './Reporte.csv', {}, { filename: 'Reporte_Tipster.csv', contentType: 'text/csv' });
+        await bot.sendDocument(chatId, './Reporte.csv', {}, { filename: 'Tipster_Export.csv', contentType: 'text/csv' });
         fs.unlinkSync('./Reporte.csv');
     } catch (e) { 
-        console.error("Error exportando:", e);
-        bot.sendMessage(chatId, "❌ Error exportar."); 
+        console.error("Error exportar:", e);
+        bot.sendMessage(chatId, "❌ Error al exportar."); 
     }
 }
 
 async function verificarResultados(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
-    if (pendientes.length === 0) return bot.sendMessage(chatId, "✅ Sin pendientes.");
+    if (pendientes.length === 0) return bot.sendMessage(chatId, "✅ Sin predicciones pendientes.");
     
     bot.sendMessage(chatId, `🔎 Auditando ${pendientes.length} predicciones...`);
     
@@ -280,19 +333,11 @@ async function verificarResultados(chatId) {
             
             if (m && m.score.fullTime) {
                 const score = `${m.score.fullTime.home}-${m.score.fullTime.away}`;
-                const prompt = `El tipster predijo: "${p.pickIA}". 
-                
-El resultado final fue: ${m.homeTeam.name} ${score} ${m.awayTeam.name}.
+                const prompt = `Pick: "${p.pickIA}". Resultado: ${m.homeTeam.name} ${score} ${m.awayTeam.name}. ¿Acertó? SI o NO.`;
 
-¿La predicción fue CORRECTA? Responde únicamente SI o NO.`;
-
-                const response = await ai.models.generateContent({
-                    model: "gemini-2.0-flash-exp",
-                    contents: prompt
-                });
+                const veredicto = await llamarGeminiConLimite(prompt);
                 
-                const veredicto = response.text.toUpperCase();
-                p.estado = veredicto.includes("SI") || veredicto.includes("SÍ") ? 'GANADA' : 'PERDIDA';
+                p.estado = veredicto.toUpperCase().includes("SI") || veredicto.toUpperCase().includes("SÍ") ? 'GANADA' : 'PERDIDA';
                 p.resultadoReal = score;
                 await p.save();
                 actualizados++;
@@ -302,7 +347,7 @@ El resultado final fue: ${m.homeTeam.name} ${score} ${m.awayTeam.name}.
         }
     }
     
-    bot.sendMessage(chatId, `✅ Auditoría finalizada. ${actualizados} predicciones actualizadas.`);
+    bot.sendMessage(chatId, `✅ Auditoría completa. ${actualizados} actualizadas.`);
 }
 
 async function obtenerRacha(code) {
@@ -311,12 +356,11 @@ async function obtenerRacha(code) {
             headers: footballHeaders, 
             params: { status: 'FINISHED' } 
         });
-        return res.data.matches.slice(-3).map(m => 
-            `${m.homeTeam.name} ${m.score.fullTime.home}-${m.score.fullTime.away} ${m.awayTeam.name}`
-        ).join(" | ");
+        return res.data.matches.slice(-2).map(m => 
+            `${m.homeTeam.name} ${m.score.fullTime.home}-${m.score.fullTime.away}`
+        ).join(", ");
     } catch (e) { 
-        console.error("Error obteniendo racha:", e);
-        return "Sin datos de racha."; 
+        return "Sin racha."; 
     }
 }
 
@@ -325,5 +369,5 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Bot Tipster V3.2 Online');
 }).listen(process.env.PORT || 10000, () => {
-    console.log(`🌐 Servidor HTTP escuchando en puerto ${process.env.PORT || 10000}`);
+    console.log(`🌐 Servidor en puerto ${process.env.PORT || 10000}`);
 });
