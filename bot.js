@@ -225,22 +225,55 @@ async function chequearAlineaciones(chatId, home, away) {
 }
 
 async function exportarDatos(chatId) {
-    bot.sendMessage(chatId, "🖨️ *Exportando...*");
+    bot.sendMessage(chatId, "🖨️ *Generando reporte financiero...*");
     bot.sendChatAction(chatId, 'upload_document');
-    const predicciones = await Prediccion.find({}).sort({ fechaPartido: -1 });
-    if (predicciones.length === 0) return bot.sendMessage(chatId, "Sin datos.");
 
-    let csvContent = "FECHA,PARTIDO,PICK,INVERSION,RESULTADO,ESTADO,GANANCIA\n";
-    predicciones.forEach(p => {
-        const pick = (p.pickIA.split('\n')[1] || "Pick").replace(/"/g, '""'); 
-        let ganancia = p.estado === 'GANADA' ? (p.montoApostado * 0.80) : (p.estado === 'PERDIDA' ? -p.montoApostado : 0);
-        csvContent += `${p.fechaPartido},"${p.equipoLocal} vs ${p.equipoVisita}","${pick}",${p.montoApostado},${p.resultadoReal || '-'},${p.estado},${ganancia.toFixed(2)}\n`;
-    });
+    try {
+        const predicciones = await Prediccion.find({}).sort({ fechaPartido: -1 });
 
-    const filePath = './Reporte.csv';
-    fs.writeFileSync(filePath, csvContent);
-    await bot.sendDocument(chatId, filePath);
-    fs.unlinkSync(filePath);
+        if (!predicciones || predicciones.length === 0) {
+            return bot.sendMessage(chatId, "⚠️ No hay datos en la base de datos para exportar.");
+        }
+
+        // Crear contenido CSV con validación de nulidad
+        let csvContent = "FECHA,PARTIDO,PICK,INVERSION (S/.),RESULTADO REAL,ESTADO,GANANCIA NETA\n";
+        
+        predicciones.forEach(p => {
+            const titulo = `${p.equipoLocal || 'Desconocido'} vs ${p.equipoVisita || 'Desconocido'}`;
+            
+            // VALIDACIÓN: Si pickIA no existe, evitamos el error .split()
+            let pickLimpio = "Sin pick registrado";
+            if (p.pickIA && typeof p.pickIA === 'string') {
+                const lineas = p.pickIA.split('\n');
+                pickLimpio = lineas.length > 1 ? lineas[1] : lineas[0];
+            }
+            
+            let ganancia = 0;
+            const monto = p.montoApostado || 0;
+            if (p.estado === 'GANADA') ganancia = (monto * 0.80).toFixed(2);
+            else if (p.estado === 'PERDIDA') ganancia = (monto * -1).toFixed(2);
+
+            // Limpiamos comas y comillas para que el CSV no se descuadre
+            const pickFinal = pickLimpio.replace(/,/g, '').replace(/"/g, '""');
+
+            csvContent += `${p.fechaPartido || 'S/F'},"${titulo}","${pickFinal}",${monto},${p.resultadoReal || '-'},${p.estado || 'PENDIENTE'},${ganancia}\n`;
+        });
+
+        const filePath = './Reporte_Apuestas.csv';
+        fs.writeFileSync(filePath, csvContent);
+
+        // Enviamos el archivo
+        await bot.sendDocument(chatId, filePath, { caption: "📊 Aquí tienes tu reporte de gestión de capital." });
+        
+        // Borramos el archivo del servidor para no ocupar espacio
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
+
+    } catch (error) {
+        console.error("Error en exportación:", error);
+        bot.sendMessage(chatId, "❌ Hubo un error técnico al generar el archivo.");
+    }
 }
 
 async function mostrarBanco(chatId) {
