@@ -167,6 +167,7 @@ bot.on('callback_query', async (query) => {
     try { await bot.answerCallbackQuery(query.id); } catch(e){}
 });
 
+// LISTAR PARTIDOS (Modificado para mostrar hasta 8 partidos de Champions/Ligas)
 async function listarPartidos(chatId, code) {
     bot.sendChatAction(chatId, 'typing');
     try {
@@ -179,17 +180,22 @@ async function listarPartidos(chatId, code) {
         const matches = res.data.matches || [];
         if (matches.length === 0) return enviarMensajeSeguro(chatId, "⚠️ No hay partidos hoy en esta liga.");
 
-        for (const m of matches.slice(0, 4)) { 
+        // CAMBIO AQUÍ: Subimos de 4 a 8 para cubrir toda la jornada de Champions
+        for (const m of matches.slice(0, 8)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
             const d = m.utcDate.split('T')[0];
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
             
             const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar IA";
-            bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*`, {
+            
+            await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*`, {
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `analyze|${h}|${a}|${code}|${d}` }]] }
             });
+
+            // PROTECCIÓN: Pausa de 300ms entre cada mensaje para evitar el baneo de Telegram
+            await delay(300); 
         }
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Error API Fútbol."); }
 }
