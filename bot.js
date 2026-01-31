@@ -9,7 +9,7 @@ const fs = require('fs');
 
 // --- 1. CONFIGURACIÓN ---
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const MODELO_USADO = "gemini-1.5-flash"; // Usamos flash por velocidad/costo
+const MODELO_USADO = "gemini-2.0-flash"; // Usamos flash por velocidad/costo
 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
@@ -112,7 +112,7 @@ async function ejecutarReporteSeguro(chatId) {
 
     try {
         for (const code of ligas) {
-            await delay(3000); 
+            await delay(4000); 
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
                 headers: footballHeaders, params: { dateFrom: hoy, dateTo: hoy }
             });
