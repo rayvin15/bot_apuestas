@@ -1,23 +1,25 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-// Usamos la librería estándar para evitar errores de compatibilidad
-const { GoogleGenerativeAI } = require("@google/generative-ai"); 
+// IMPORTANTE: Usamos la nueva librería recomendada
+const { GoogleGenAI } = require("@google/genai"); 
 const http = require('http');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
 const fs = require('fs');
 
 // --- 1. CONFIGURACIÓN ---
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const MODELO_USADO = "gemini-2.0-flash"; // Tu elección: Más potente, menos cupo.
+// Inicialización con la nueva sintaxis
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// Usamos el modelo 2.0 (pero si falla, cambia a "gemini-1.5-flash")
+const MODELO_USADO = "gemini-2.0-flash"; 
 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-// --- 2. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO 429) ---
+// --- 2. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO) ---
 let lastRequestTime = 0;
-// Aumentamos un poco el delay para proteger el modelo 2.0
 const COOLDOWN_MS = 5000; 
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -29,28 +31,33 @@ async function llamarGeminiSeguro(prompt) {
     }
 
     try {
-        console.log(`🚀 AI Request usando ${MODELO_USADO}...`);
+        console.log(`🚀 AI Request (New SDK) usando ${MODELO_USADO}...`);
         
-        // Configuración estándar y robusta
-        const model = genAI.getGenerativeModel({ model: MODELO_USADO });
-        
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
-        
+        // --- SINTAXIS NUEVA LIBRERÍA (@google/genai) ---
+        const response = await ai.models.generateContent({
+            model: MODELO_USADO,
+            contents: prompt // La nueva librería acepta string directo aquí
+        });
+
         lastRequestTime = Date.now();
+        
+        // Extracción de texto compatible con la nueva versión
+        let text = "";
+        if (response.text) {
+             // A veces es una función, a veces una propiedad según la versión exacta
+            text = typeof response.text === 'function' ? response.text() : response.text;
+        } else {
+            // Fallback por si la estructura cambia
+            text = JSON.stringify(response); 
+        }
+        
         return text;
 
     } catch (error) {
         console.error("❌ Error AI:", error.message);
         
-        // Manejo específico para cuando el 2.0 se satura
         if (error.message.includes('429') || error.message.includes('Quota')) {
-            throw new Error("⏳ El modelo 2.0 está saturado (Límite Google). Intenta en 1 min.");
-        }
-        // Manejo si el modelo 2.0 no está disponible en tu región/cuenta
-        if (error.message.includes('404') || error.message.includes('not found')) {
-            throw new Error("🚫 Tu API Key no tiene acceso al Beta 2.0 aún. Cambia a 1.5.");
+            throw new Error("⏳ Cuota agotada (Error 429). Espera 1 minuto.");
         }
         throw error;
     }
@@ -60,16 +67,15 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
     try {
         await bot.sendMessage(chatId, texto, { ...opciones, parse_mode: 'Markdown' });
     } catch (error) {
-        // Fallback si el Markdown falla
         try {
-            await bot.sendMessage(chatId, "⚠️ _Respuesta (Sin formato):_\n" + texto, opciones);
-        } catch (e) { console.error("Error envío Telegram:", e.message); }
+            await bot.sendMessage(chatId, "⚠️ _Texto plano (Error formato):_\n" + texto, opciones);
+        } catch (e) { console.error("Error Telegram:", e.message); }
     }
 }
 
 // --- 3. BASE DE DATOS ---
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log(`🟢 Bot V6.5 (Motor: ${MODELO_USADO}): DB Conectada`))
+    .then(() => console.log('🟢 Bot V6.6 (New Google SDK): DB Conectada'))
     .catch(err => console.error('🔴 Error BD:', err));
 
 const PrediccionSchema = new mongoose.Schema({
@@ -90,7 +96,7 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `🧠 *Tipster AI V6.5*\n🤖 Modelo: *${MODELO_USADO}*\n✅ Radar & Auditoría Activos`, {
+    enviarMensajeSeguro(chatId, `🧠 *Tipster AI V6.6*\n📚 Lib: @google/genai\n🤖 Modelo: ${MODELO_USADO}`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
@@ -103,45 +109,42 @@ bot.onText(/\/start/, async (msg) => {
     });
 });
 
-// --- 5. LOGICA MATUTINA (6:00 AM) ---
-// Nota: Con el modelo 2.0, este reporte consume mucha cuota.
+// --- 5. LOGICA MATUTINA (CRON) ---
 cron.schedule('0 6 * * *', async () => {
     const config = await Config.findOne({ key: 'adminChatId' });
     if (config) ejecutarReporteSeguro(config.value);
 }, { scheduled: true, timezone: "America/Lima" });
 
 async function ejecutarReporteSeguro(chatId) {
-    enviarMensajeSeguro(chatId, "☀️ *Iniciando reporte diario (Gemini 2.0)...*");
+    enviarMensajeSeguro(chatId, "☀️ *Analizando mercado...*");
     const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL'];
     let partidos = [];
     const hoy = new Date().toISOString().split('T')[0];
 
     try {
         for (const code of ligas) {
-            await delay(4000); // Pausa necesaria para evitar bloqueo de IP
+            await delay(4000); 
             try {
                 const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
                     headers: footballHeaders, params: { dateFrom: hoy, dateTo: hoy }
                 });
                 if (res.data.matches) partidos = [...partidos, ...res.data.matches];
-            } catch (e) { console.log(`Saltando liga ${code} por error API.`); }
+            } catch (e) { console.log(`Liga ${code} sin datos.`); }
         }
 
-        if (partidos.length === 0) return enviarMensajeSeguro(chatId, "☕ No hay partidos destacados hoy.");
+        if (partidos.length === 0) return enviarMensajeSeguro(chatId, "☕ Sin partidos top hoy.");
 
-        // Limitamos a 12 partidos para que el prompt no sea gigante
-        const listaTexto = partidos.slice(0, 12).map(m => `• ${m.homeTeam.name} vs ${m.awayTeam.name} (${m.competition.name})`).join("\n");
+        const listaTexto = partidos.slice(0, 15).map(m => `• ${m.homeTeam.name} vs ${m.awayTeam.name} (${m.competition.name})`).join("\n");
 
-        const prompt = `Analista Pro. Analiza hoy:
+        const prompt = `Analista Pro. Partidos de hoy:
 ${listaTexto}
 
-Selecciona SOLO 3 partidos con cuota de valor.
-Evita partidos trampa.
+Elige 3 partidos seguros (Value Bets).
 Formato:
 🏆 *LIGA*
 ⚔️ Partido
 💎 Pick: (Ej: Gana Local)
-💡 Razón: (Breve)
+💡 Razón:
 💰 Confianza: (🟢/🟡)`;
 
         const respuesta = await llamarGeminiSeguro(prompt);
@@ -174,7 +177,6 @@ bot.on('callback_query', async (query) => {
     try { await bot.answerCallbackQuery(query.id); } catch(e){}
 });
 
-// LISTAR PARTIDOS
 async function listarPartidos(chatId, code) {
     bot.sendChatAction(chatId, 'typing');
     try {
@@ -185,9 +187,8 @@ async function listarPartidos(chatId, code) {
         });
 
         const matches = res.data.matches || [];
-        if (matches.length === 0) return enviarMensajeSeguro(chatId, "⚠️ No hay partidos hoy en esta liga.");
+        if (matches.length === 0) return enviarMensajeSeguro(chatId, "⚠️ Liga sin partidos hoy.");
 
-        // Mostramos máximo 8 para no saturar Telegram ni al usuario
         for (const m of matches.slice(0, 8)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
@@ -205,7 +206,6 @@ async function listarPartidos(chatId, code) {
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Error API Fútbol."); }
 }
 
-// --- LOGICA DE ANÁLISIS ---
 async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     const id = `${home}-${away}-${date}`;
     const cached = await Prediccion.findOne({ partidoId: id });
@@ -218,30 +218,21 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     }
 
     bot.sendChatAction(chatId, 'typing');
-    enviarMensajeSeguro(chatId, "🧠 *Gemini 2.0 pensando...*");
+    enviarMensajeSeguro(chatId, "🧠 *Gemini 2.0 Analizando...*");
 
     try {
         const racha = await obtenerRacha(code, home, away);
         
-        const prompt = `Analista Deportivo Experto.
+        const prompt = `Analista Deportivo.
         Partido: ${home} vs ${away}.
-        Datos previos: ${racha}.
+        Historial: ${racha}.
 
-        Genera un JSON válido:
-        {
-          "pick": "Mercado específico (ej: Ambos Marcan)",
-          "confianza": "🟢 (Alta) / 🟡 (Media) / 🔴 (Baja)",
-          "stake": 20,
-          "analisis": "Argumento táctico breve.",
-          "marcador": "Resultado exacto probable",
-          "consejo": "Tip de gestión."
-        }`;
+        Genera JSON:
+        {"pick":"...","confianza":"🟢/🟡/🔴","stake":20,"analisis":"...","marcador":"...","consejo":"..."}`;
 
         const rawText = await llamarGeminiSeguro(prompt);
         let datos = extraerDatosDeTexto(rawText); 
-        
-        // Validación extra de seguridad
-        if (!datos.analisis) datos.analisis = "Análisis basado en estadísticas recientes y localía.";
+        if (!datos.analisis) datos.analisis = "Análisis técnico basado en valor.";
 
         const msgFinal = `🎯 *PICK:* ${datos.pick}
 ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
@@ -268,23 +259,23 @@ ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 }
 
 function extraerDatosDeTexto(rawText) {
-    let datos = { pick: "Error lectura", confianza: "🟡", stake: 0, analisis: "Intenta de nuevo.", marcador: "?", consejo: "" };
+    let datos = { pick: "Error lectura", confianza: "🟡", stake: 0, analisis: "", marcador: "?", consejo: "" };
     try {
-        let jsonClean = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        let jsonClean = typeof rawText === 'string' ? rawText.replace(/```json/g, '').replace(/```/g, '').trim() : "";
         const firstOpen = jsonClean.indexOf('{');
         const lastClose = jsonClean.lastIndexOf('}');
         if (firstOpen !== -1 && lastClose !== -1) {
             jsonClean = jsonClean.substring(firstOpen, lastClose + 1);
             datos = { ...datos, ...JSON.parse(jsonClean) };
         }
-    } catch (e) { console.log("JSON Fallido, texto crudo recibido."); }
+    } catch (e) { console.log("JSON Parse Error"); }
     return datos;
 }
 
-// --- OTRAS FUNCIONES ---
+// --- UTILS ---
 async function verPendientes(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' }).sort({ fechaPartido: 1 });
-    if (pendientes.length === 0) return enviarMensajeSeguro(chatId, "✅ Sin pendientes.");
+    if (pendientes.length === 0) return enviarMensajeSeguro(chatId, "✅ Nada pendiente.");
     let mensaje = `⏳ *PENDIENTES (${pendientes.length})*\n\n`;
     pendientes.forEach((p, i) => {
         mensaje += `*${i + 1}.* ${p.equipoLocal} vs ${p.equipoVisita}\n🎯 ${p.pickIA}\n-------------------\n`;
@@ -295,34 +286,31 @@ async function verPendientes(chatId) {
 async function consultarRadar(chatId, home, away) {
     enviarMensajeSeguro(chatId, "🔍 *Revisando bajas...*");
     try {
-        const prompt = `Noticias cortas: ¿Bajas importantes ${home} vs ${away}? Máximo 20 palabras.`;
+        const prompt = `Responde en 20 palabras: ¿Bajas clave para ${home} vs ${away}?`;
         const resp = await llamarGeminiSeguro(prompt);
         enviarMensajeSeguro(chatId, `🚨 *RADAR:* ${resp}`);
-    } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar no disponible (Cuota)."); }
+    } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar off."); }
 }
 
 async function ejecutarAuditoria(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
-    if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Todo auditado.");
+    if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Auditado.");
 
-    enviarMensajeSeguro(chatId, `👨‍⚖️ *Auditando...*`);
+    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando...*`);
     let ganadas = 0, perdidas = 0;
 
     for (const p of pendientes) {
         try {
-            await delay(2500); // Delay generoso para no saturar
+            await delay(2000); 
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
                 headers: footballHeaders, 
                 params: { status: 'FINISHED', dateFrom: p.fechaPartido, dateTo: p.fechaPartido }
             });
-            
-            const match = res.data.matches.find(m => 
-                m.homeTeam.name === p.equipoLocal && m.awayTeam.name === p.equipoVisita
-            );
+            const match = res.data.matches.find(m => m.homeTeam.name === p.equipoLocal && m.awayTeam.name === p.equipoVisita);
 
             if (match && match.score.fullTime.home !== null) {
                 const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
-                const prompt = `Juez estricto. Pick: "${p.pickIA}". Resultado: ${marcadorReal}. Responde SOLO: GANADA o PERDIDA.`;
+                const prompt = `Juez. Pick: "${p.pickIA}". Res: ${marcadorReal}. ¿GANADA o PERDIDA? Solo esa palabra.`;
                 const veredicto = await llamarGeminiSeguro(prompt);
                 const estadoFinal = veredicto.toUpperCase().includes('GAN') ? 'GANADA' : 'PERDIDA';
                 
@@ -330,13 +318,12 @@ async function ejecutarAuditoria(chatId) {
                 p.resultadoReal = marcadorReal;
                 await p.save();
                 
-                const icono = estadoFinal === 'GANADA' ? '✅' : '❌';
-                await enviarMensajeSeguro(chatId, `${icono} *${p.equipoLocal} vs ${p.equipoVisita}*\nRes: ${marcadorReal} -> *${estadoFinal}*`);
+                await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nRes: ${marcadorReal}`);
                 if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
             }
-        } catch (e) { console.log("Error auditoría indiv."); }
+        } catch (e) { console.log("Skip audit."); }
     }
-    enviarMensajeSeguro(chatId, `📊 *Resumen:* +${ganadas} / -${perdidas}`);
+    enviarMensajeSeguro(chatId, `📊 *Resultados:* +${ganadas} / -${perdidas}`);
 }
 
 async function mostrarBanca(chatId) {
@@ -346,7 +333,7 @@ async function mostrarBanca(chatId) {
         if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.80); 
         else saldo -= p.montoApostado;
     });
-    enviarMensajeSeguro(chatId, `💰 *BANCA NETA:* S/. ${saldo.toFixed(2)}`);
+    enviarMensajeSeguro(chatId, `💰 *BANCA:* S/. ${saldo.toFixed(2)}`);
 }
 
 async function exportarCSV(chatId) {
@@ -371,7 +358,7 @@ async function obtenerRacha(code, home, away) {
             .slice(0, 5)
             .map(m => `${m.homeTeam.name} ${m.score.fullTime.home}-${m.score.fullTime.away} ${m.awayTeam.name}`)
             .join(", ");
-    } catch { return "Sin datos previos."; }
+    } catch { return "Sin racha."; }
 }
 
 function getNombreConfianza(simbolo) {
@@ -381,4 +368,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V6.5 Gemini 2.0 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V6.6 (New SDK) Online'); }).listen(PORT);
