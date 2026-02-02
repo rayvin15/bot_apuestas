@@ -5,14 +5,13 @@ const axios = require('axios');
 const { GoogleGenAI } = require("@google/genai"); 
 const http = require('http');
 const mongoose = require('mongoose');
-const cron = require('node-cron');
 const fs = require('fs');
 
 // --- 1. CONFIGURACIÓN ---
 // Inicialización con la nueva sintaxis
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Usamos el modelo 2.0 (pero si falla, cambia a "gemini-1.5-flash")
+// Usamos el modelo 2.0
 const MODELO_USADO = "gemini-2.0-flash"; 
 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
@@ -36,7 +35,7 @@ async function llamarGeminiSeguro(prompt) {
         // --- SINTAXIS NUEVA LIBRERÍA (@google/genai) ---
         const response = await ai.models.generateContent({
             model: MODELO_USADO,
-            contents: prompt // La nueva librería acepta string directo aquí
+            contents: prompt
         });
 
         lastRequestTime = Date.now();
@@ -44,10 +43,8 @@ async function llamarGeminiSeguro(prompt) {
         // Extracción de texto compatible con la nueva versión
         let text = "";
         if (response.text) {
-             // A veces es una función, a veces una propiedad según la versión exacta
             text = typeof response.text === 'function' ? response.text() : response.text;
         } else {
-            // Fallback por si la estructura cambia
             text = JSON.stringify(response); 
         }
         
@@ -75,7 +72,7 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
 
 // --- 3. BASE DE DATOS ---
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('🟢 Bot V6.6 (New Google SDK): DB Conectada'))
+    .then(() => console.log('🟢 Bot V6.7 (Sin Alarma): DB Conectada'))
     .catch(err => console.error('🔴 Error BD:', err));
 
 const PrediccionSchema = new mongoose.Schema({
@@ -96,7 +93,7 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `🧠 *Tipster AI V6.6*\n📚 Lib: @google/genai\n🤖 Modelo: ${MODELO_USADO}`, {
+    enviarMensajeSeguro(chatId, `🧠 *Tipster AI V6.7*\n🚫 Alarma Desactivada\n🤖 Modelo: ${MODELO_USADO}`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
@@ -109,12 +106,9 @@ bot.onText(/\/start/, async (msg) => {
     });
 });
 
-// --- 5. LOGICA MATUTINA (CRON) ---
-cron.schedule('0 6 * * *', async () => {
-    const config = await Config.findOne({ key: 'adminChatId' });
-    if (config) ejecutarReporteSeguro(config.value);
-}, { scheduled: true, timezone: "America/Lima" });
-
+// --- 5. REPORTES (Solo Manual - Alarma Eliminada) ---
+// La función se mantiene por si quieres llamarla con un botón en el futuro,
+// pero ya NO SE EJECUTA sola.
 async function ejecutarReporteSeguro(chatId) {
     enviarMensajeSeguro(chatId, "☀️ *Analizando mercado...*");
     const ligas = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL'];
@@ -368,4 +362,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V6.6 (New SDK) Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V6.7 (Sin Alarma) Online'); }).listen(PORT);
