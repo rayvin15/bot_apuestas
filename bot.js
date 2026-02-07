@@ -12,7 +12,7 @@ const fs = require('fs');
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Usamos el modelo 2.0
-const MODELO_USADO = "gemini-1.5-flash"; 
+const MODELO_USADO = "gemini-1.5-flash-latest"; 
 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
