@@ -1,6 +1,7 @@
 {
   "name": "telegram-bot",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -10,7 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@google/genai": "^1.38.0",
+    "@google/genai": "^1.40.0",
     "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "luxon": "^3.7.2",
