@@ -1,4 +1,4 @@
-import 'dotenv/config'; // Forma moderna de llamar a dotenv
+import 'dotenv/config'; // SIEMPRE LA PRIMERA LÍNEA
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import { GoogleGenAI } from "@google/genai";
@@ -6,19 +6,21 @@ import http from 'http';
 import mongoose from 'mongoose';
 import fs from 'fs';
 
-// --- 1. CONFIGURACIÓN ---
-// Inicialización del nuevo SDK (toma la API Key de process.env automáticamente)
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
+console.log("--- INICIANDO BOT ---");
+console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA (Revisa .env)");
+console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
-// Usamos el modelo que te funcionó en la prueba
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const MODELO_USADO = "gemini-2.5-flash"; 
 
+// Cabeceras para la API de fútbol
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
+
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
 // --- 2. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO) ---
 let lastRequestTime = 0;
-// Gemini 2.5 es rápido, dejamos 4 segs por seguridad
 const COOLDOWN_MS = 4000; 
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -31,7 +33,6 @@ async function llamarGeminiSeguro(prompt) {
 
     try {
         console.log(`🚀 Consultando a ${MODELO_USADO}...`);
-        
         const response = await ai.models.generateContent({
             model: MODELO_USADO,
             contents: prompt
@@ -39,21 +40,16 @@ async function llamarGeminiSeguro(prompt) {
 
         lastRequestTime = Date.now();
         
-        // EN EL NUEVO SDK: response.text suele ser una propiedad directa, 
-        // pero validamos por si acaso viene como función.
         let text = "";
         if (response.text) {
              text = typeof response.text === 'function' ? response.text() : response.text;
         } else {
-             // Fallback por si la estructura cambia levemente
              text = JSON.stringify(response); 
         }
-        
         return text;
 
     } catch (error) {
         console.error("❌ Error AI:", error.message);
-        
         if (error.message.includes('429') || error.message.includes('Quota')) {
             throw new Error("⏳ Cuota agotada momentáneamente (Error 429).");
         }
@@ -66,7 +62,6 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
         await bot.sendMessage(chatId, texto, { ...opciones, parse_mode: 'Markdown' });
     } catch (error) {
         try {
-            // Si falla el Markdown, enviamos texto plano
             await bot.sendMessage(chatId, "⚠️ _Formato simple:_\n" + texto, opciones);
         } catch (e) { console.error("Error Telegram Crítico:", e.message); }
     }
@@ -74,7 +69,7 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
 
 // --- 3. BASE DE DATOS ---
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log(`🟢 Bot Activo con ${MODELO_USADO} (ES Modules)`))
+    .then(() => console.log(`🟢 Bot Conectado a Mongo y Listo.`))
     .catch(err => console.error('🔴 Error BD:', err));
 
 const PrediccionSchema = new mongoose.Schema({
@@ -88,7 +83,6 @@ const PrediccionSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 
-// Verificamos si el modelo ya existe para evitar error de recompilación
 const Prediccion = mongoose.models.Prediccion || mongoose.model('Prediccion', PrediccionSchema);
 const Config = mongoose.models.Config || mongoose.model('Config', new mongoose.Schema({ key: String, value: String }));
 
@@ -132,34 +126,65 @@ bot.on('callback_query', async (query) => {
     try { await bot.answerCallbackQuery(query.id); } catch(e){}
 });
 
+// --- FUNCIÓN CLAVE CORREGIDA ---
 async function listarPartidos(chatId, code) {
     bot.sendChatAction(chatId, 'typing');
     try {
-        await delay(1000); 
-        const hoy = new Date().toISOString().split('T')[0];
+        await delay(500); 
+        
+        // CORRECCIÓN: Buscamos en un rango de 3 días para asegurar partidos
+        const fechaHoy = new Date();
+        const fechaFuturo = new Date();
+        fechaFuturo.setDate(fechaHoy.getDate() + 3);
+
+        const sHoy = fechaHoy.toISOString().split('T')[0];
+        const sFuturo = fechaFuturo.toISOString().split('T')[0];
+
+        console.log(`📡 Buscando partidos ${code} entre ${sHoy} y ${sFuturo}`);
+
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
-            headers: footballHeaders, params: { dateFrom: hoy, dateTo: hoy, status: 'SCHEDULED' }
+            headers: footballHeaders, 
+            params: { 
+                dateFrom: sHoy, 
+                dateTo: sFuturo,
+                status: 'SCHEDULED' 
+            }
         });
 
         const matches = res.data.matches || [];
-        if (matches.length === 0) return enviarMensajeSeguro(chatId, "⚠️ Liga sin partidos hoy.");
+        
+        if (matches.length === 0) {
+            return enviarMensajeSeguro(chatId, `⚠️ No hay partidos programados de ${code} entre hoy y el ${sFuturo}.`);
+        }
 
-        // Limitamos a 8 partidos para no saturar el chat
+        // Limitamos a 8 partidos
         for (const m of matches.slice(0, 8)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
             const d = m.utcDate.split('T')[0];
-            const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
             
+            // Verificamos si ya lo analizamos antes
+            const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
             const btnText = existe ? "✅ Ver Pick Guardado" : "🧠 Analizar con IA";
             
-            await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*`, {
+            await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*\n📅 ${d}`, {
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `analyze|${h}|${a}|${code}|${d}` }]] }
             });
-            await delay(400); 
+            await delay(300); // Pequeña pausa para no saturar Telegram
         }
-    } catch (e) { enviarMensajeSeguro(chatId, "❌ Error API Fútbol."); }
+    } catch (e) { 
+        console.error("🔴 ERROR API FÚTBOL:");
+        if (e.response) {
+            console.error("Status:", e.response.status);
+            console.error("Msg:", e.response.data.message);
+            if(e.response.status === 429) enviarMensajeSeguro(chatId, "⚠️ API saturada. Espera 1 minuto.");
+            else enviarMensajeSeguro(chatId, `❌ Error de API: ${e.response.data.message}`);
+        } else {
+            console.error(e.message);
+            enviarMensajeSeguro(chatId, "❌ Error de conexión con la API de deportes.");
+        }
+    }
 }
 
 async function procesarAnalisisCompleto(chatId, home, away, code, date) {
@@ -192,9 +217,8 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
         const rawText = await llamarGeminiSeguro(prompt);
         let datos = extraerDatosDeTexto(rawText); 
         
-        // Validación básica
         if (!datos.pick || datos.pick === "Error lectura") {
-             datos.analisis = rawText; // Si falla el JSON, mostramos el texto crudo
+             datos.analisis = rawText; 
              datos.pick = "Ver Análisis";
         }
 
@@ -225,9 +249,7 @@ ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 function extraerDatosDeTexto(rawText) {
     let datos = { pick: "Error lectura", confianza: "🟡", stake: 0, analisis: "", marcador: "?", consejo: "" };
     try {
-        // Limpiamos los bloques de código que la IA a veces pone
         let jsonClean = typeof rawText === 'string' ? rawText.replace(/```json/g, '').replace(/```/g, '').trim() : "";
-        
         const firstOpen = jsonClean.indexOf('{');
         const lastClose = jsonClean.lastIndexOf('}');
         
@@ -275,17 +297,14 @@ async function ejecutarAuditoria(chatId) {
                 params: { status: 'FINISHED', dateFrom: p.fechaPartido, dateTo: p.fechaPartido }
             });
             
-            // Buscamos el partido exacto
             const match = res.data.matches.find(m => m.homeTeam.name === p.equipoLocal && m.awayTeam.name === p.equipoVisita);
 
             if (match && match.score.fullTime.home !== null) {
                 const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
                 
-                // Le preguntamos a la IA si se ganó
                 const prompt = `Actúa como Juez de apuestas.
                 Apuesta realizada: "${p.pickIA}".
                 Resultado Final: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}.
-                
                 Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
                 
                 const veredicto = await llamarGeminiSeguro(prompt);
@@ -308,7 +327,6 @@ async function mostrarBanca(chatId) {
     const historial = await Prediccion.find({ estado: { $ne: 'PENDIENTE' } });
     let saldo = 0;
     historial.forEach(p => {
-        // Cálculo simple: Si gana sumamos (Stake * 0.8 de ganancia neta aprox), si pierde restamos Stake
         if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85); 
         else saldo -= p.montoApostado;
     });
@@ -332,12 +350,11 @@ async function exportarCSV(chatId) {
 async function obtenerRacha(code, home, away) {
     try {
         await delay(500);
-        // Traemos últimos partidos finalizados de la liga
+        // Buscamos últimos resultados sin límite estricto de fechas
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders, params: { status: 'FINISHED', limit: 20 } 
         });
         
-        // Filtramos solo los que involucran a nuestros equipos
         const relevantes = res.data.matches
             .filter(m => m.homeTeam.name === home || m.awayTeam.name === home || m.homeTeam.name === away || m.awayTeam.name === away)
             .slice(0, 5)
