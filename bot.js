@@ -18,6 +18,8 @@ const MODELO_USADO = "gemini-2.5-flash";
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
+// --- AGREGA ESTO AQUÍ ---
+const partidosCache = new Map(); // Memoria temporal para guardar nombres de equipos
 
 // --- 2. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO) ---
 let lastRequestTime = 0;
@@ -109,21 +111,37 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
-    if (data.startsWith('comp_')) await listarPartidos(chatId, data.split('_')[1]);
-    else if (data.startsWith('analyze|')) {
-        const [_, home, away, code, date] = data.split('|');
-        await procesarAnalisisCompleto(chatId, home, away, code, date);
-    }
-    else if (data.startsWith('radar|')) {
-        const [_, home, away] = data.split('|');
-        await consultarRadar(chatId, home, away);
-    }
-    else if (data === 'ver_pendientes') await verPendientes(chatId);
-    else if (data === 'ver_auditoria') await ejecutarAuditoria(chatId);
-    else if (data === 'ver_banca') await mostrarBanca(chatId);
-    else if (data === 'exportar_excel') await exportarCSV(chatId);
+    try {
+        if (data.startsWith('comp_')) {
+            await listarPartidos(chatId, data.split('_')[1]);
+        }
+        // --- AQUÍ ESTÁ EL CAMBIO PARA RECUPERAR DATOS ---
+        else if (data.startsWith('an|')) {
+            const matchId = data.split('|')[1];
+            const info = partidosCache.get(matchId);
 
-    try { await bot.answerCallbackQuery(query.id); } catch(e){}
+            if (info) {
+                // Si tenemos los datos en memoria, analizamos
+                await procesarAnalisisCompleto(chatId, info.home, info.away, info.code, info.date);
+            } else {
+                // Si el bot se reinició y perdió la memoria
+                await enviarMensajeSeguro(chatId, "⚠️ La sesión expiró. Por favor pide la lista de partidos de nuevo.");
+            }
+        }
+        // ------------------------------------------------
+        else if (data.startsWith('radar|')) {
+            const [_, home, away] = data.split('|');
+            await consultarRadar(chatId, home, away);
+        }
+        else if (data === 'ver_pendientes') await verPendientes(chatId);
+        else if (data === 'ver_auditoria') await ejecutarAuditoria(chatId);
+        else if (data === 'ver_banca') await mostrarBanca(chatId);
+        else if (data === 'exportar_excel') await exportarCSV(chatId);
+
+        await bot.answerCallbackQuery(query.id);
+    } catch (e) {
+        console.error("Error en botón:", e.message);
+    }
 });
 
 // --- FUNCIÓN CLAVE CORREGIDA ---
@@ -132,7 +150,6 @@ async function listarPartidos(chatId, code) {
     try {
         await delay(500); 
         
-        // 1. Buscamos partidos
         const fechaHoy = new Date();
         const fechaFuturo = new Date();
         fechaFuturo.setDate(fechaHoy.getDate() + 3);
@@ -144,55 +161,40 @@ async function listarPartidos(chatId, code) {
 
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders, 
-            params: { 
-                dateFrom: sHoy, 
-                dateTo: sFuturo,
-                status: 'SCHEDULED' 
-            }
+            params: { dateFrom: sHoy, dateTo: sFuturo, status: 'SCHEDULED' }
         });
 
         const matches = res.data.matches || [];
         
         if (matches.length === 0) {
-            return enviarMensajeSeguro(chatId, `⚠️ No hay partidos programados de ${code} hasta el ${sFuturo}.`);
+            return enviarMensajeSeguro(chatId, `⚠️ No hay partidos de ${code} hasta el ${sFuturo}.`);
         }
 
-        // 2. Enviamos los partidos UNO POR UNO con pausa
-        // Limitamos a 6 para evitar bloqueo de Telegram si hay muchos
-        for (const m of matches.slice(0, 6)) { 
+        // Limitamos a 8 para no saturar
+        for (const m of matches.slice(0, 8)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
             const d = m.utcDate.split('T')[0];
             
+            // --- TRUCO: Guardamos los datos en memoria ---
+            // Usamos el ID del partido como clave
+            partidosCache.set(String(m.id), { home: h, away: a, date: d, code: code });
+
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
-            const btnText = existe ? "✅ Ver Pick Guardado" : "🧠 Analizar con IA";
+            const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar";
             
+            // --- CAMBIO CLAVE: El botón ahora es diminuto ---
+            // Solo enviamos "an" (analizar) y el ID del partido (ej: 45032)
             await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*\n📅 ${d}`, {
                 parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `analyze|${h}|${a}|${code}|${d}` }]] }
+                reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `an|${m.id}` }]] }
             });
             
-            // IMPORTANTE: Aumentamos el delay a 1.5 segundos entre mensajes
-            // Esto evita el error "Too Many Requests" de Telegram
-            await delay(1500); 
+            await delay(1200); // Pausa para evitar bloqueo por spam
         }
     } catch (e) { 
-        // 3. Manejo de Errores BLINDADO (Ya no crashea)
-        console.error("🔴 ERROR CONTROLADO EN LISTAR PARTIDOS:");
-        
-        // Usamos el operador ?. (Optional Chaining) para que no falle si algo es undefined
-        const errorMsg = e.response?.data?.message || e.message || "Error desconocido";
-        const errorStatus = e.response?.status || "Sin Status";
-
-        console.error(`   - Tipo: ${errorStatus}`);
-        console.error(`   - Mensaje: ${errorMsg}`);
-
-        // Le avisamos al usuario sin matar el bot
-        if (errorStatus === 429) {
-            enviarMensajeSeguro(chatId, "🚦 Telegram me pidió frenar un poco. Intenta de nuevo en unos segundos.");
-        } else {
-            enviarMensajeSeguro(chatId, "⚠️ Hubo un error obteniendo la lista. Intenta otra vez.");
-        }
+        console.error("🔴 Error API:", e.message);
+        enviarMensajeSeguro(chatId, "❌ Error al obtener la lista de partidos.");
     }
 }
 
