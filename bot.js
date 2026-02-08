@@ -132,7 +132,7 @@ async function listarPartidos(chatId, code) {
     try {
         await delay(500); 
         
-        // CORRECCIÓN: Buscamos en un rango de 3 días para asegurar partidos
+        // 1. Buscamos partidos
         const fechaHoy = new Date();
         const fechaFuturo = new Date();
         fechaFuturo.setDate(fechaHoy.getDate() + 3);
@@ -154,16 +154,16 @@ async function listarPartidos(chatId, code) {
         const matches = res.data.matches || [];
         
         if (matches.length === 0) {
-            return enviarMensajeSeguro(chatId, `⚠️ No hay partidos programados de ${code} entre hoy y el ${sFuturo}.`);
+            return enviarMensajeSeguro(chatId, `⚠️ No hay partidos programados de ${code} hasta el ${sFuturo}.`);
         }
 
-        // Limitamos a 8 partidos
-        for (const m of matches.slice(0, 8)) { 
+        // 2. Enviamos los partidos UNO POR UNO con pausa
+        // Limitamos a 6 para evitar bloqueo de Telegram si hay muchos
+        for (const m of matches.slice(0, 6)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
             const d = m.utcDate.split('T')[0];
             
-            // Verificamos si ya lo analizamos antes
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
             const btnText = existe ? "✅ Ver Pick Guardado" : "🧠 Analizar con IA";
             
@@ -171,18 +171,27 @@ async function listarPartidos(chatId, code) {
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `analyze|${h}|${a}|${code}|${d}` }]] }
             });
-            await delay(300); // Pequeña pausa para no saturar Telegram
+            
+            // IMPORTANTE: Aumentamos el delay a 1.5 segundos entre mensajes
+            // Esto evita el error "Too Many Requests" de Telegram
+            await delay(1500); 
         }
     } catch (e) { 
-        console.error("🔴 ERROR API FÚTBOL:");
-        if (e.response) {
-            console.error("Status:", e.response.status);
-            console.error("Msg:", e.response.data.message);
-            if(e.response.status === 429) enviarMensajeSeguro(chatId, "⚠️ API saturada. Espera 1 minuto.");
-            else enviarMensajeSeguro(chatId, `❌ Error de API: ${e.response.data.message}`);
+        // 3. Manejo de Errores BLINDADO (Ya no crashea)
+        console.error("🔴 ERROR CONTROLADO EN LISTAR PARTIDOS:");
+        
+        // Usamos el operador ?. (Optional Chaining) para que no falle si algo es undefined
+        const errorMsg = e.response?.data?.message || e.message || "Error desconocido";
+        const errorStatus = e.response?.status || "Sin Status";
+
+        console.error(`   - Tipo: ${errorStatus}`);
+        console.error(`   - Mensaje: ${errorMsg}`);
+
+        // Le avisamos al usuario sin matar el bot
+        if (errorStatus === 429) {
+            enviarMensajeSeguro(chatId, "🚦 Telegram me pidió frenar un poco. Intenta de nuevo en unos segundos.");
         } else {
-            console.error(e.message);
-            enviarMensajeSeguro(chatId, "❌ Error de conexión con la API de deportes.");
+            enviarMensajeSeguro(chatId, "⚠️ Hubo un error obteniendo la lista. Intenta otra vez.");
         }
     }
 }
