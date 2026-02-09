@@ -1,4 +1,4 @@
-import 'dotenv/config'; // SIEMPRE LA PRIMERA LÍNEA
+import 'dotenv/config'; 
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import { GoogleGenAI } from "@google/genai";
@@ -7,24 +7,42 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT ---");
-console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA (Revisa .env)");
+console.log("--- INICIANDO BOT V8.0 (ANTI-CRASH) ---");
+console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const MODELO_USADO = "gemini-2.5-flash"; 
-
-// Cabeceras para la API de fútbol
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-// --- AGREGA ESTO AQUÍ ---
-const partidosCache = new Map(); // Memoria temporal para guardar nombres de equipos
+// --- 2. INICIALIZACIÓN DEL BOT CON TOLERANCIA A FALLOS ---
+// Configuramos el polling para que sea más estable en servidores gratuitos
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { 
+    polling: {
+        interval: 300,      // Revisa mensajes cada 300ms
+        autoStart: true,
+        params: { timeout: 10 } // Long polling de 10 segundos
+    } 
+});
 
-// --- 2. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO) ---
+const partidosCache = new Map(); // Memoria para los botones
+
+// --- 3. MANEJO DE ERRORES DE CONEXIÓN (¡IMPORTANTE!) ---
+// Esto evita que el bot se muera con "socket hang up" o "ECONNRESET"
+bot.on('polling_error', (error) => {
+    // Solo mostramos el código para no ensuciar el log
+    // Si ves esto en la consola, el bot se reconecta solo automáticamente.
+    console.log(`⚠️ Red inestable (${error.code || error.message}). Reintentando...`);
+});
+
+// Captura errores graves del sistema para que no se detenga el proceso
+process.on('uncaughtException', (err) => {
+    console.error('❌ Error Inesperado (No Fatal):', err.message);
+});
+
+// --- 4. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO GEMINI) ---
 let lastRequestTime = 0;
 const COOLDOWN_MS = 4000; 
-
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function llamarGeminiSeguro(prompt) {
@@ -69,9 +87,9 @@ async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
     }
 }
 
-// --- 3. BASE DE DATOS ---
+// --- 5. BASE DE DATOS ---
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log(`🟢 Bot Conectado a Mongo y Listo.`))
+    .then(() => console.log(`🟢 Mongo Conectado.`))
     .catch(err => console.error('🔴 Error BD:', err));
 
 const PrediccionSchema = new mongoose.Schema({
@@ -88,12 +106,12 @@ const PrediccionSchema = new mongoose.Schema({
 const Prediccion = mongoose.models.Prediccion || mongoose.model('Prediccion', PrediccionSchema);
 const Config = mongoose.models.Config || mongoose.model('Config', new mongoose.Schema({ key: String, value: String }));
 
-// --- 4. MENÚ PRINCIPAL ---
+// --- 6. COMANDOS Y MENÚS ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026*\n🤖 Modelo: ${MODELO_USADO}\n🚀 Estado: Online`, {
+    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026*\n🤖 Modelo: ${MODELO_USADO}\n🛡️ Sistema Anti-Crash: Activo`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
@@ -106,7 +124,6 @@ bot.onText(/\/start/, async (msg) => {
     });
 });
 
-// --- 5. MANEJO DE BOTONES ---
 bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
@@ -115,20 +132,16 @@ bot.on('callback_query', async (query) => {
         if (data.startsWith('comp_')) {
             await listarPartidos(chatId, data.split('_')[1]);
         }
-        // --- AQUÍ ESTÁ EL CAMBIO PARA RECUPERAR DATOS ---
         else if (data.startsWith('an|')) {
             const matchId = data.split('|')[1];
             const info = partidosCache.get(matchId);
 
             if (info) {
-                // Si tenemos los datos en memoria, analizamos
                 await procesarAnalisisCompleto(chatId, info.home, info.away, info.code, info.date);
             } else {
-                // Si el bot se reinició y perdió la memoria
-                await enviarMensajeSeguro(chatId, "⚠️ La sesión expiró. Por favor pide la lista de partidos de nuevo.");
+                await enviarMensajeSeguro(chatId, "⚠️ La sesión expiró. Pide la lista de nuevo.");
             }
         }
-        // ------------------------------------------------
         else if (data.startsWith('radar|')) {
             const [_, home, away] = data.split('|');
             await consultarRadar(chatId, home, away);
@@ -141,10 +154,11 @@ bot.on('callback_query', async (query) => {
         await bot.answerCallbackQuery(query.id);
     } catch (e) {
         console.error("Error en botón:", e.message);
+        try { await bot.answerCallbackQuery(query.id); } catch {}
     }
 });
 
-// --- FUNCIÓN CLAVE CORREGIDA ---
+// --- 7. LÓGICA DE PARTIDOS ---
 async function listarPartidos(chatId, code) {
     bot.sendChatAction(chatId, 'typing');
     try {
@@ -170,31 +184,28 @@ async function listarPartidos(chatId, code) {
             return enviarMensajeSeguro(chatId, `⚠️ No hay partidos de ${code} hasta el ${sFuturo}.`);
         }
 
-        // Limitamos a 8 para no saturar
+        // Slice de 8 para no saturar
         for (const m of matches.slice(0, 8)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
             const d = m.utcDate.split('T')[0];
             
-            // --- TRUCO: Guardamos los datos en memoria ---
-            // Usamos el ID del partido como clave
+            // Guardamos en caché para usar IDs cortos
             partidosCache.set(String(m.id), { home: h, away: a, date: d, code: code });
 
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
             const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar";
             
-            // --- CAMBIO CLAVE: El botón ahora es diminuto ---
-            // Solo enviamos "an" (analizar) y el ID del partido (ej: 45032)
             await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*\n📅 ${d}`, {
                 parse_mode: 'Markdown',
                 reply_markup: { inline_keyboard: [[{ text: btnText, callback_data: `an|${m.id}` }]] }
             });
             
-            await delay(1200); // Pausa para evitar bloqueo por spam
+            await delay(1200); 
         }
     } catch (e) { 
-        console.error("🔴 Error API:", e.message);
-        enviarMensajeSeguro(chatId, "❌ Error al obtener la lista de partidos.");
+        console.error("🔴 Error API Fútbol:", e.message);
+        enviarMensajeSeguro(chatId, "❌ No se pudo obtener la lista. Intenta en un minuto.");
     }
 }
 
@@ -272,7 +283,7 @@ function extraerDatosDeTexto(rawText) {
     return datos;
 }
 
-// --- UTILS ---
+// --- UTILS ADICIONALES ---
 async function verPendientes(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' }).sort({ fechaPartido: 1 });
     if (pendientes.length === 0) return enviarMensajeSeguro(chatId, "✅ No tienes apuestas pendientes.");
@@ -312,11 +323,7 @@ async function ejecutarAuditoria(chatId) {
 
             if (match && match.score.fullTime.home !== null) {
                 const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
-                
-                const prompt = `Actúa como Juez de apuestas.
-                Apuesta realizada: "${p.pickIA}".
-                Resultado Final: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}.
-                Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
+                const prompt = `Actúa como Juez. Apuesta: "${p.pickIA}". Resultado: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}. Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
                 
                 const veredicto = await llamarGeminiSeguro(prompt);
                 const estadoFinal = veredicto.toUpperCase().includes('GAN') ? 'GANADA' : 'PERDIDA';
@@ -326,12 +333,11 @@ async function ejecutarAuditoria(chatId) {
                 await p.save();
                 
                 await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}`);
-                
                 if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
             }
-        } catch (e) { console.log(`Skip audit: ${p.equipoLocal} vs ${p.equipoVisita}`); }
+        } catch (e) { console.log(`Skip audit: ${p.equipoLocal}`); }
     }
-    enviarMensajeSeguro(chatId, `📊 *Resumen Auditoría:* +${ganadas} Ganadas / -${perdidas} Perdidas`);
+    enviarMensajeSeguro(chatId, `📊 *Resumen:* +${ganadas} Ganadas / -${perdidas} Perdidas`);
 }
 
 async function mostrarBanca(chatId) {
@@ -341,7 +347,6 @@ async function mostrarBanca(chatId) {
         if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85); 
         else saldo -= p.montoApostado;
     });
-    
     const emoji = saldo >= 0 ? '🤑' : '📉';
     enviarMensajeSeguro(chatId, `💰 *BANCA ACTUAL*\n\nSaldo Neto: S/. ${saldo.toFixed(2)} ${emoji}\nApuestas cerradas: ${historial.length}`);
 }
@@ -351,28 +356,23 @@ async function exportarCSV(chatId) {
         const data = await Prediccion.find({});
         let csv = "FECHA,PARTIDO,PICK,RESULTADO,ESTADO\n";
         data.forEach(p => csv += `${p.fechaPartido},${p.equipoLocal} vs ${p.equipoVisita},"${p.pickIA}",${p.resultadoReal},${p.estado}\n`);
-        
         const path = `./history_export.csv`;
         fs.writeFileSync(path, csv);
         await bot.sendDocument(chatId, path);
-    } catch (e) { enviarMensajeSeguro(chatId, "Error al exportar archivo."); }
+    } catch (e) { enviarMensajeSeguro(chatId, "Error al exportar."); }
 }
 
 async function obtenerRacha(code, home, away) {
     try {
         await delay(500);
-        // Buscamos últimos resultados sin límite estricto de fechas
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders, params: { status: 'FINISHED', limit: 20 } 
         });
-        
-        const relevantes = res.data.matches
+        return res.data.matches
             .filter(m => m.homeTeam.name === home || m.awayTeam.name === home || m.homeTeam.name === away || m.awayTeam.name === away)
             .slice(0, 5)
             .map(m => `${m.homeTeam.name} ${m.score.fullTime.home}-${m.score.fullTime.away} ${m.awayTeam.name}`)
-            .join(" | ");
-            
-        return relevantes || "Sin datos recientes";
+            .join(" | ") || "Sin datos recientes";
     } catch { return "No se pudo obtener racha reciente."; }
 }
 
@@ -383,4 +383,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V7.0 (ESM) Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.0 Online'); }).listen(PORT);
