@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.0 (ANTI-CRASH) ---");
+console.log("--- INICIANDO BOT V8.1 (ANTI-CRASH & ANTI-TIMEOUT) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
@@ -16,26 +16,21 @@ const MODELO_USADO = "gemini-2.5-flash";
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
 // --- 2. INICIALIZACIÓN DEL BOT CON TOLERANCIA A FALLOS ---
-// Configuramos el polling para que sea más estable en servidores gratuitos
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { 
     polling: {
-        interval: 300,      // Revisa mensajes cada 300ms
+        interval: 300,      
         autoStart: true,
-        params: { timeout: 10 } // Long polling de 10 segundos
+        params: { timeout: 10 } 
     } 
 });
 
-const partidosCache = new Map(); // Memoria para los botones
+const partidosCache = new Map(); 
 
-// --- 3. MANEJO DE ERRORES DE CONEXIÓN (¡IMPORTANTE!) ---
-// Esto evita que el bot se muera con "socket hang up" o "ECONNRESET"
+// --- 3. MANEJO DE ERRORES DE CONEXIÓN ---
 bot.on('polling_error', (error) => {
-    // Solo mostramos el código para no ensuciar el log
-    // Si ves esto en la consola, el bot se reconecta solo automáticamente.
     console.log(`⚠️ Red inestable (${error.code || error.message}). Reintentando...`);
 });
 
-// Captura errores graves del sistema para que no se detenga el proceso
 process.on('uncaughtException', (err) => {
     console.error('❌ Error Inesperado (No Fatal):', err.message);
 });
@@ -53,10 +48,20 @@ async function llamarGeminiSeguro(prompt) {
 
     try {
         console.log(`🚀 Consultando a ${MODELO_USADO}...`);
-        const response = await ai.models.generateContent({
+        
+        // --- NUEVO: Evitamos que la IA congele el bot si no responde ---
+        const peticionIA = ai.models.generateContent({
             model: MODELO_USADO,
             contents: prompt
         });
+
+        // Límite de 20 segundos de espera
+        const timeoutError = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 20000)
+        );
+
+        const response = await Promise.race([peticionIA, timeoutError]);
+        // -------------------------------------------------------------
 
         lastRequestTime = Date.now();
         
@@ -128,6 +133,10 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
+    // --- CORRECCIÓN CLAVE: RESPONDER A TELEGRAM INMEDIATAMENTE ---
+    // Esto evita el error "query is too old"
+    bot.answerCallbackQuery(query.id).catch(() => {}); 
+
     try {
         if (data.startsWith('comp_')) {
             await listarPartidos(chatId, data.split('_')[1]);
@@ -151,10 +160,8 @@ bot.on('callback_query', async (query) => {
         else if (data === 'ver_banca') await mostrarBanca(chatId);
         else if (data === 'exportar_excel') await exportarCSV(chatId);
 
-        await bot.answerCallbackQuery(query.id);
     } catch (e) {
-        console.error("Error en botón:", e.message);
-        try { await bot.answerCallbackQuery(query.id); } catch {}
+        console.error("Error procesando botón:", e.message);
     }
 });
 
@@ -184,13 +191,11 @@ async function listarPartidos(chatId, code) {
             return enviarMensajeSeguro(chatId, `⚠️ No hay partidos de ${code} hasta el ${sFuturo}.`);
         }
 
-        // Slice de 8 para no saturar
         for (const m of matches.slice(0, 8)) { 
             const h = m.homeTeam.name;
             const a = m.awayTeam.name;
             const d = m.utcDate.split('T')[0];
             
-            // Guardamos en caché para usar IDs cortos
             partidosCache.set(String(m.id), { home: h, away: a, date: d, code: code });
 
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
@@ -221,7 +226,7 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     }
 
     bot.sendChatAction(chatId, 'typing');
-    enviarMensajeSeguro(chatId, "🧠 *Gemini 2.5 Analizando estrategia...*");
+    enviarMensajeSeguro(chatId, "🧠 *Generando análisis, por favor espera...*");
 
     try {
         const racha = await obtenerRacha(code, home, away);
@@ -383,4 +388,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V8.0 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.1 Online'); }).listen(PORT);
