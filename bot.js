@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.1 (ANTI-CRASH & ANTI-TIMEOUT) ---");
+console.log("--- INICIANDO BOT V8.2 (IA AVANZADA + CONTEXTO BD) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
@@ -49,19 +49,16 @@ async function llamarGeminiSeguro(prompt) {
     try {
         console.log(`🚀 Consultando a ${MODELO_USADO}...`);
         
-        // --- NUEVO: Evitamos que la IA congele el bot si no responde ---
         const peticionIA = ai.models.generateContent({
             model: MODELO_USADO,
             contents: prompt
         });
 
-        // Límite de 20 segundos de espera
         const timeoutError = new Promise((_, reject) => 
             setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 20000)
         );
 
         const response = await Promise.race([peticionIA, timeoutError]);
-        // -------------------------------------------------------------
 
         lastRequestTime = Date.now();
         
@@ -111,12 +108,36 @@ const PrediccionSchema = new mongoose.Schema({
 const Prediccion = mongoose.models.Prediccion || mongoose.model('Prediccion', PrediccionSchema);
 const Config = mongoose.models.Config || mongoose.model('Config', new mongoose.Schema({ key: String, value: String }));
 
+// --- NUEVA FUNCIÓN: RECUPERAR HISTORIAL DE LA BD ---
+async function obtenerHistorialBD(home, away) {
+    try {
+        const historial = await Prediccion.find({
+            $or: [
+                { equipoLocal: home }, { equipoVisita: home },
+                { equipoLocal: away }, { equipoVisita: away }
+            ],
+            estado: { $in: ['GANADA', 'PERDIDA'] }
+        }).sort({ fechaPartido: -1 }).limit(8);
+
+        if (historial.length === 0) return "No hay registro previo de apuestas para estos equipos en la BD.";
+
+        let resumen = "";
+        historial.forEach(p => {
+            resumen += `- Partido: ${p.equipoLocal} vs ${p.equipoVisita} | Pick: ${p.pickIA} | Estado: ${p.estado} | Marcador Real: ${p.resultadoReal}\n`;
+        });
+        return resumen;
+    } catch (e) {
+        console.error("Error leyendo BD para historial:", e.message);
+        return "Error al leer historial.";
+    }
+}
+
 // --- 6. COMANDOS Y MENÚS ---
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026*\n🤖 Modelo: ${MODELO_USADO}\n🛡️ Sistema Anti-Crash: Activo`, {
+    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026 PRO*\n🤖 Modelo: ${MODELO_USADO}\n🛡️ Filtro de Valor: Activado`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
@@ -133,8 +154,6 @@ bot.on('callback_query', async (query) => {
     const data = query.data;
     const chatId = query.message.chat.id;
 
-    // --- CORRECCIÓN CLAVE: RESPONDER A TELEGRAM INMEDIATAMENTE ---
-    // Esto evita el error "query is too old"
     bot.answerCallbackQuery(query.id).catch(() => {}); 
 
     try {
@@ -199,7 +218,7 @@ async function listarPartidos(chatId, code) {
             partidosCache.set(String(m.id), { home: h, away: a, date: d, code: code });
 
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
-            const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar";
+            const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar BD+IA";
             
             await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*\n📅 ${d}`, {
                 parse_mode: 'Markdown',
@@ -226,37 +245,61 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     }
 
     bot.sendChatAction(chatId, 'typing');
-    enviarMensajeSeguro(chatId, "🧠 *Generando análisis, por favor espera...*");
+    enviarMensajeSeguro(chatId, "🧠 *Cruzando datos con la BD y generando análisis...*");
 
     try {
         const racha = await obtenerRacha(code, home, away);
+        const historialBD = await obtenerHistorialBD(home, away);
         
-        const prompt = `Actúa como el mejor Analista de Apuestas Deportivas del mundo.
-        Partido: ${home} vs ${away}.
-        Datos recientes: ${racha}.
+        const prompt = `Actúa como un Analista Profesional de Trading Deportivo con 20 años de experiencia. Tu objetivo no es "adivinar" quién gana, sino encontrar "Value Bets".
 
-        Tu tarea es generar un JSON puro con la mejor apuesta posible (Value Bet).
-        Formato JSON requerido:
-        {"pick":"nombre de la apuesta","confianza":"🟢/🟡/🔴","stake": (numero del 1 al 20),"analisis":"explicacion breve","marcador":"resultado exacto probable","consejo":"consejo de gestion"}
-        
-        IMPORTANTE: Solo devuelve el JSON, sin bloques de código markdown.`;
+DATOS CLAVE DEL PARTIDO:
+- Encuentro: ${home} vs ${away}
+- Liga: ${code}
+- Fecha: ${date}
+
+CONTEXTO HISTÓRICO (RACHA RECIENTE):
+${racha}
+
+HISTORIAL DE RENDIMIENTO EN LA BASE DE DATOS:
+${historialBD}
+(Nota: Este historial indica cómo hemos fallado o acertado antes apostando a estos equipos. Úsalo para no repetir errores de juicio y ajustar tu nivel de confianza).
+
+INSTRUCCIONES DE ANÁLISIS:
+1. ANÁLISIS DE ESTILOS: Compara cómo el estilo táctico del local afecta al visitante basado en las rachas.
+2. FILTRO DE PESIMISMO: Dime por qué esta apuesta PODRÍA PERDERSE.
+3. CRITERIO DE "NO BET": Si los datos son contradictorios o no hay una ventaja estadística clara, tu recomendación DEBE ser "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
+4. AJUSTE DE STAKE: Escala de 1 a 10. Solo usa Stake 8-10 si la probabilidad es abrumadora.
+
+REQUISITOS DEL FORMATO DE SALIDA (JSON PURO):
+Responde ÚNICAMENTE con un objeto JSON. No incluyas explicaciones fuera del JSON, ni bloques de código (ni \`\`\`json).
+{
+  "pick": "Escribe aquí la apuesta. Si no es clara, pon 'PASAR / NO VALOR'",
+  "confianza": "🟢, 🟡 o 🔴",
+  "stake": (un número del 0 al 10),
+  "analisis": "Resumen técnico de la ventaja estadística (max 250 caracteres).",
+  "marcador": "Resultado exacto más probable.",
+  "consejo": "Advertencia específica sobre qué factor externo podría arruinar el pick."
+}`;
 
         const rawText = await llamarGeminiSeguro(prompt);
         let datos = extraerDatosDeTexto(rawText); 
         
         if (!datos.pick || datos.pick === "Error lectura") {
              datos.analisis = rawText; 
-             datos.pick = "Ver Análisis";
+             datos.pick = "PASAR / VER ANÁLISIS";
+             datos.stake = 0;
+             datos.confianza = "🔴";
         }
 
         const msgFinal = `🎯 *PICK:* ${datos.pick}
 ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
-💰 *Stake:* S/. ${datos.stake}
+💰 *Stake:* ${datos.stake}/10
 ⚽ *Marcador:* ${datos.marcador}
 
 💡 *Análisis:* ${datos.analisis}
 
-🎓 *Coach:* _${datos.consejo}_`;
+⚠️ *Advertencia:* _${datos.consejo}_`;
 
         const nueva = new Prediccion({
             partidoId: id, equipoLocal: home, equipoVisita: away, fechaPartido: date,
@@ -267,7 +310,7 @@ ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 
         bot.sendMessage(chatId, msgFinal, { 
             parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [[{ text: "🔍 Radar", callback_data: `radar|${home}|${away}` }]] }
+            reply_markup: { inline_keyboard: [[{ text: "🔍 Últimas Noticias", callback_data: `radar|${home}|${away}` }]] }
         });
 
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Error Análisis: " + e.message); }
@@ -301,11 +344,11 @@ async function verPendientes(chatId) {
 }
 
 async function consultarRadar(chatId, home, away) {
-    enviarMensajeSeguro(chatId, "🔍 *Escaneando noticias de última hora...*");
+    enviarMensajeSeguro(chatId, "🔍 *Escaneando radar del partido...*");
     try {
-        const prompt = `Responde en máximo 30 palabras: ¿Hay bajas o lesiones clave confirmadas para el partido ${home} vs ${away} hoy?`;
+        const prompt = `Responde en máximo 30 palabras: ¿Hay información de bajas, lesiones clave o contexto crítico para el partido ${home} vs ${away} hoy?`;
         const resp = await llamarGeminiSeguro(prompt);
-        enviarMensajeSeguro(chatId, `🚨 *RADAR DE BAJAS:*\n${resp}`);
+        enviarMensajeSeguro(chatId, `🚨 *RADAR:* \n${resp}`);
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar no disponible."); }
 }
 
@@ -314,7 +357,7 @@ async function ejecutarAuditoria(chatId) {
     if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Todo auditado.");
 
     enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos...*`);
-    let ganadas = 0, perdidas = 0;
+    let ganadas = 0, perdidas = 0, anuladas = 0;
 
     for (const p of pendientes) {
         try {
@@ -327,6 +370,15 @@ async function ejecutarAuditoria(chatId) {
             const match = res.data.matches.find(m => m.homeTeam.name === p.equipoLocal && m.awayTeam.name === p.equipoVisita);
 
             if (match && match.score.fullTime.home !== null) {
+                // Si la IA mandó a "PASAR / NO VALOR" (Stake 0), no lo contamos como pérdida ni ganancia
+                if (p.montoApostado === 0 || p.pickIA.includes("PASAR")) {
+                    p.estado = 'ANULADA';
+                    p.resultadoReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
+                    await p.save();
+                    anuladas++;
+                    continue;
+                }
+
                 const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
                 const prompt = `Actúa como Juez. Apuesta: "${p.pickIA}". Resultado: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}. Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
                 
@@ -342,25 +394,25 @@ async function ejecutarAuditoria(chatId) {
             }
         } catch (e) { console.log(`Skip audit: ${p.equipoLocal}`); }
     }
-    enviarMensajeSeguro(chatId, `📊 *Resumen:* +${ganadas} Ganadas / -${perdidas} Perdidas`);
+    enviarMensajeSeguro(chatId, `📊 *Resumen Auditoría:*\n✅ +${ganadas} Ganadas\n❌ -${perdidas} Perdidas\n⚪ ${anuladas} Evitadas (No Bet)`);
 }
 
 async function mostrarBanca(chatId) {
     const historial = await Prediccion.find({ estado: { $ne: 'PENDIENTE' } });
     let saldo = 0;
     historial.forEach(p => {
-        if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85); 
-        else saldo -= p.montoApostado;
+        if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85); // Calculando 85% de ganancia aprox.
+        else if (p.estado === 'PERDIDA') saldo -= p.montoApostado;
     });
     const emoji = saldo >= 0 ? '🤑' : '📉';
-    enviarMensajeSeguro(chatId, `💰 *BANCA ACTUAL*\n\nSaldo Neto: S/. ${saldo.toFixed(2)} ${emoji}\nApuestas cerradas: ${historial.length}`);
+    enviarMensajeSeguro(chatId, `💰 *BANCA ACTUAL*\n\nSaldo Neto (Stakes): ${saldo.toFixed(2)} U ${emoji}\nApuestas evaluadas: ${historial.length}`);
 }
 
 async function exportarCSV(chatId) {
     try {
         const data = await Prediccion.find({});
-        let csv = "FECHA,PARTIDO,PICK,RESULTADO,ESTADO\n";
-        data.forEach(p => csv += `${p.fechaPartido},${p.equipoLocal} vs ${p.equipoVisita},"${p.pickIA}",${p.resultadoReal},${p.estado}\n`);
+        let csv = "FECHA,PARTIDO,PICK,RESULTADO,ESTADO,STAKE\n";
+        data.forEach(p => csv += `${p.fechaPartido},${p.equipoLocal} vs ${p.equipoVisita},"${p.pickIA}",${p.resultadoReal},${p.estado},${p.montoApostado}\n`);
         const path = `./history_export.csv`;
         fs.writeFileSync(path, csv);
         await bot.sendDocument(chatId, path);
@@ -382,10 +434,10 @@ async function obtenerRacha(code, home, away) {
 }
 
 function getNombreConfianza(simbolo) {
-    if (simbolo && simbolo.includes('🟢')) return "ALTA";
-    if (simbolo && simbolo.includes('🔴')) return "BAJA";
+    if (simbolo && (simbolo.includes('🟢') || simbolo.toUpperCase() === 'ALTA')) return "ALTA";
+    if (simbolo && (simbolo.includes('🔴') || simbolo.toUpperCase() === 'BAJA')) return "BAJA (O NO BET)";
     return "MEDIA";
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V8.1 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.2 Online'); }).listen(PORT);
