@@ -55,7 +55,7 @@ async function llamarGeminiSeguro(prompt) {
         });
 
         const timeoutError = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 20000)
+            setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 45000)
         );
 
         const response = await Promise.race([peticionIA, timeoutError]);
