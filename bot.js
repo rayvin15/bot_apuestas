@@ -7,12 +7,12 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.3 (IA AVANZADA + AUDITORÍA MEJORADA) ---");
+console.log("--- INICIANDO BOT V8.5 (IA AVANZADA + AUDITORÍA GLOBAL V4) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-// CAMBIADO: A veces 2.5 da timeout. Si sigue pasando, cámbialo a "gemini-1.5-flash"
+// Nota: Se recomienda usar "gemini-1.5-flash" para mayor estabilidad en la API pública.
 const MODELO_USADO = "gemini-2.5-flash"; 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
@@ -55,7 +55,6 @@ async function llamarGeminiSeguro(prompt) {
             contents: prompt
         });
 
-        // AUMENTADO A 45 SEGUNDOS PARA EVITAR TIMEOUT EN ANÁLISIS COMPLEJOS
         const timeoutError = new Promise((_, reject) => 
             setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 45000)
         );
@@ -110,7 +109,7 @@ const PrediccionSchema = new mongoose.Schema({
 const Prediccion = mongoose.models.Prediccion || mongoose.model('Prediccion', PrediccionSchema);
 const Config = mongoose.models.Config || mongoose.model('Config', new mongoose.Schema({ key: String, value: String }));
 
-// --- NUEVA FUNCIÓN: RECUPERAR HISTORIAL DE LA BD ---
+// --- HISTORIAL DE LA BD ---
 async function obtenerHistorialBD(home, away) {
     try {
         const historial = await Prediccion.find({
@@ -265,7 +264,6 @@ ${racha}
 
 HISTORIAL DE RENDIMIENTO EN LA BASE DE DATOS:
 ${historialBD}
-(Nota: Este historial indica cómo hemos fallado o acertado antes apostando a estos equipos. Úsalo para no repetir errores de juicio y ajustar tu nivel de confianza).
 
 INSTRUCCIONES DE ANÁLISIS:
 1. ANÁLISIS DE ESTILOS: Compara cómo el estilo táctico del local afecta al visitante basado en las rachas.
@@ -333,7 +331,6 @@ function extraerDatosDeTexto(rawText) {
     return datos;
 }
 
-// --- UTILS ADICIONALES ---
 async function verPendientes(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' }).sort({ fechaPartido: 1 });
     if (pendientes.length === 0) return enviarMensajeSeguro(chatId, "✅ No tienes apuestas pendientes.");
@@ -354,8 +351,7 @@ async function consultarRadar(chatId, home, away) {
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar no disponible."); }
 }
 
-// --- FUNCIÓN DE AUDITORÍA TOTALMENTE MEJORADA ---
-// Función auxiliar para quitar tildes y mayúsculas
+// --- FUNCIÓN DE AUDITORÍA TOTALMENTE MEJORADA (ENDPOINT GLOBAL) ---
 function normalizarTexto(texto) {
     if (!texto) return "";
     return texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -365,20 +361,19 @@ async function ejecutarAuditoria(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
     if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Todo auditado.");
 
-    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos...*\n_(Esto tomará unos ${pendientes.length * 7} segundos para no saturar la API)_`);
+    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos usando endpoint global...*\n_(Esto tomará unos ${pendientes.length * 7} segundos)_`);
     let ganadas = 0, perdidas = 0, anuladas = 0;
 
     for (const p of pendientes) {
         try {
-            // 1. ESPERA DE 7 SEGUNDOS: Vital para no ser baneados por la API gratuita (Límite: 10/minuto)
-            await delay(7000); 
+            await delay(7000); // Vital para no ser baneados por rate limit
             
-            // 2. Rango de búsqueda MUY amplio (-3 días a +3 días) por si el partido se movió
             const fechaD = new Date(p.fechaPartido);
             const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 3);
             const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 3);
 
-            const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
+            // AQUÍ ESTÁ LA MAGIA: Usamos /v4/matches (Endpoint global) en lugar de /v4/competitions/{id}/matches
+            const res = await axios.get(`https://api.football-data.org/v4/matches`, {
                 headers: footballHeaders, 
                 params: { 
                     status: 'FINISHED', 
@@ -387,7 +382,6 @@ async function ejecutarAuditoria(chatId) {
                 }
             });
             
-            // 3. Match A PRUEBA DE BALAS (Sin tildes, sin mayúsculas)
             const match = res.data.matches.find(m => {
                 const apiHome = normalizarTexto(m.homeTeam.name);
                 const apiAway = normalizarTexto(m.awayTeam.name);
@@ -399,7 +393,6 @@ async function ejecutarAuditoria(chatId) {
             });
 
             if (match && match.score.fullTime.home !== null) {
-                // Manejo de apuestas "NO BET" o Stake 0
                 if (p.montoApostado === 0 || p.pickIA.toUpperCase().includes("PASAR")) {
                     p.estado = 'ANULADA';
                     p.resultadoReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
@@ -421,7 +414,7 @@ async function ejecutarAuditoria(chatId) {
                 await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}\nPick original: ${p.pickIA}`);
                 if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
             } else {
-                console.log(`Auditoria saltada: ${p.equipoLocal} no se encontró en estado FINISHED en la API.`);
+                console.log(`Auditoria saltada: ${p.equipoLocal} no se encontró en estado FINISHED en el endpoint global.`);
             }
         } catch (e) { 
             console.log(`Error crítico auditando ${p.equipoLocal}: ${e.message}`); 
@@ -434,7 +427,7 @@ async function mostrarBanca(chatId) {
     const historial = await Prediccion.find({ estado: { $ne: 'PENDIENTE' } });
     let saldo = 0;
     historial.forEach(p => {
-        if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85); // Calculando 85% de ganancia aprox.
+        if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85);
         else if (p.estado === 'PERDIDA') saldo -= p.montoApostado;
     });
     const emoji = saldo >= 0 ? '🤑' : '📉';
@@ -473,4 +466,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V8.3 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.5 Online'); }).listen(PORT);
