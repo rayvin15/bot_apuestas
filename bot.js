@@ -355,21 +355,28 @@ async function consultarRadar(chatId, home, away) {
 }
 
 // --- FUNCIÓN DE AUDITORÍA TOTALMENTE MEJORADA ---
+// Función auxiliar para quitar tildes y mayúsculas
+function normalizarTexto(texto) {
+    if (!texto) return "";
+    return texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 async function ejecutarAuditoria(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
     if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Todo auditado.");
 
-    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos...*`);
+    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos...*\n_(Esto tomará unos ${pendientes.length * 7} segundos para no saturar la API)_`);
     let ganadas = 0, perdidas = 0, anuladas = 0;
 
     for (const p of pendientes) {
         try {
-            await delay(2000); // Respetamos el límite de la API
+            // 1. ESPERA DE 7 SEGUNDOS: Vital para no ser baneados por la API gratuita (Límite: 10/minuto)
+            await delay(7000); 
             
-            // 1. Ampliamos el rango de búsqueda (-1 día a +1 día)
+            // 2. Rango de búsqueda MUY amplio (-3 días a +3 días) por si el partido se movió
             const fechaD = new Date(p.fechaPartido);
-            const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 1);
-            const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 1);
+            const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 3);
+            const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 3);
 
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
                 headers: footballHeaders, 
@@ -380,14 +387,19 @@ async function ejecutarAuditoria(chatId) {
                 }
             });
             
-            // 2. Búsqueda flexible de nombres de equipos
-            const match = res.data.matches.find(m => 
-                (m.homeTeam.name.includes(p.equipoLocal) || p.equipoLocal.includes(m.homeTeam.name)) &&
-                (m.awayTeam.name.includes(p.equipoVisita) || p.equipoVisita.includes(m.awayTeam.name))
-            );
+            // 3. Match A PRUEBA DE BALAS (Sin tildes, sin mayúsculas)
+            const match = res.data.matches.find(m => {
+                const apiHome = normalizarTexto(m.homeTeam.name);
+                const apiAway = normalizarTexto(m.awayTeam.name);
+                const dbHome = normalizarTexto(p.equipoLocal);
+                const dbAway = normalizarTexto(p.equipoVisita);
+
+                return (apiHome.includes(dbHome) || dbHome.includes(apiHome)) &&
+                       (apiAway.includes(dbAway) || dbAway.includes(apiAway));
+            });
 
             if (match && match.score.fullTime.home !== null) {
-                // 3. Manejo de apuestas "NO BET" o Stake 0
+                // Manejo de apuestas "NO BET" o Stake 0
                 if (p.montoApostado === 0 || p.pickIA.toUpperCase().includes("PASAR")) {
                     p.estado = 'ANULADA';
                     p.resultadoReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
@@ -409,9 +421,11 @@ async function ejecutarAuditoria(chatId) {
                 await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}\nPick original: ${p.pickIA}`);
                 if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
             } else {
-                console.log(`Auditoria pendiente: ${p.equipoLocal} vs ${p.equipoVisita} aún no termina o no se encontró.`);
+                console.log(`Auditoria saltada: ${p.equipoLocal} no se encontró en estado FINISHED en la API.`);
             }
-        } catch (e) { console.log(`Error auditando ${p.equipoLocal}: ${e.message}`); }
+        } catch (e) { 
+            console.log(`Error crítico auditando ${p.equipoLocal}: ${e.message}`); 
+        }
     }
     enviarMensajeSeguro(chatId, `📊 *Resumen Auditoría:*\n✅ +${ganadas} Ganadas\n❌ -${perdidas} Perdidas\n⚪ ${anuladas} Evitadas (No Bet)`);
 }
