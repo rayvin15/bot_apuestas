@@ -7,12 +7,11 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.5 (IA AVANZADA + AUDITORÍA GLOBAL V4) ---");
+console.log("--- INICIANDO BOT V8.6 (IA AVANZADA + AUDITORÍA DE PRECISIÓN) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-// Nota: Se recomienda usar "gemini-1.5-flash" para mayor estabilidad en la API pública.
 const MODELO_USADO = "gemini-2.5-flash"; 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
@@ -351,7 +350,7 @@ async function consultarRadar(chatId, home, away) {
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar no disponible."); }
 }
 
-// --- FUNCIÓN DE AUDITORÍA TOTALMENTE MEJORADA (ENDPOINT GLOBAL) ---
+// --- FUNCIÓN DE AUDITORÍA V8.6 (BÚSQUEDA POR LIGA SIN FILTRO DE ESTADO) ---
 function normalizarTexto(texto) {
     if (!texto) return "";
     return texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -361,7 +360,7 @@ async function ejecutarAuditoria(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
     if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Todo auditado.");
 
-    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos usando endpoint global...*\n_(Esto tomará unos ${pendientes.length * 7} segundos)_`);
+    enviarMensajeSeguro(chatId, `👨‍⚖️ *Verificando ${pendientes.length} partidos...*\n_(Tiempo estimado: ${Math.ceil((pendientes.length * 7)/60)} minutos)_`);
     let ganadas = 0, perdidas = 0, anuladas = 0;
 
     for (const p of pendientes) {
@@ -372,11 +371,10 @@ async function ejecutarAuditoria(chatId) {
             const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 3);
             const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 3);
 
-            // AQUÍ ESTÁ LA MAGIA: Usamos /v4/matches (Endpoint global) en lugar de /v4/competitions/{id}/matches
-            const res = await axios.get(`https://api.football-data.org/v4/matches`, {
+            // CLAVE: Buscamos en la liga específica (p.liga) y le QUITAMOS el filtro "status: FINISHED"
+            const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
                 headers: footballHeaders, 
                 params: { 
-                    status: 'FINISHED', 
                     dateFrom: antes.toISOString().split('T')[0], 
                     dateTo: despues.toISOString().split('T')[0] 
                 }
@@ -392,29 +390,36 @@ async function ejecutarAuditoria(chatId) {
                        (apiAway.includes(dbAway) || dbAway.includes(apiAway));
             });
 
-            if (match && match.score.fullTime.home !== null) {
-                if (p.montoApostado === 0 || p.pickIA.toUpperCase().includes("PASAR")) {
-                    p.estado = 'ANULADA';
-                    p.resultadoReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
-                    await p.save();
-                    anuladas++;
-                    continue;
-                }
+            if (match) {
+                // Evaluamos manualmente el estado
+                if (match.status === 'FINISHED' || match.status === 'AWARDED') {
+                    if (p.montoApostado === 0 || p.pickIA.toUpperCase().includes("PASAR")) {
+                        p.estado = 'ANULADA';
+                        p.resultadoReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
+                        await p.save();
+                        anuladas++;
+                        continue;
+                    }
 
-                const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
-                const prompt = `Actúa como Juez. Apuesta: "${p.pickIA}". Resultado del partido: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}. Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
-                
-                const veredicto = await llamarGeminiSeguro(prompt);
-                const estadoFinal = veredicto.toUpperCase().includes('GAN') ? 'GANADA' : 'PERDIDA';
-                
-                p.estado = estadoFinal;
-                p.resultadoReal = marcadorReal;
-                await p.save();
-                
-                await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}\nPick original: ${p.pickIA}`);
-                if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
+                    const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
+                    const prompt = `Actúa como Juez. Apuesta: "${p.pickIA}". Resultado del partido: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}. Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
+                    
+                    const veredicto = await llamarGeminiSeguro(prompt);
+                    const estadoFinal = veredicto.toUpperCase().includes('GAN') ? 'GANADA' : 'PERDIDA';
+                    
+                    p.estado = estadoFinal;
+                    p.resultadoReal = marcadorReal;
+                    await p.save();
+                    
+                    await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}\nPick original: ${p.pickIA}`);
+                    if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
+                } else {
+                    // El partido existe pero la API gratuita aún no lo marca como terminado
+                    console.log(`Auditoria pausada: ${p.equipoLocal} figura como ${match.status}`);
+                    await enviarMensajeSeguro(chatId, `⏳ *${p.equipoLocal} vs ${p.equipoVisita}*\n_La API indica estado: ${match.status}. Se auditará cuando se actualice._`);
+                }
             } else {
-                console.log(`Auditoria saltada: ${p.equipoLocal} no se encontró en estado FINISHED en el endpoint global.`);
+                console.log(`Auditoria saltada: ${p.equipoLocal} vs ${p.equipoVisita} no encontrado en la liga ${p.liga}.`);
             }
         } catch (e) { 
             console.log(`Error crítico auditando ${p.equipoLocal}: ${e.message}`); 
@@ -466,4 +471,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V8.5 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.6 Online'); }).listen(PORT);
