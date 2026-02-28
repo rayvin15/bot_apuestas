@@ -7,11 +7,12 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.2 (IA AVANZADA + CONTEXTO BD) ---");
+console.log("--- INICIANDO BOT V8.3 (IA AVANZADA + AUDITORÍA MEJORADA) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// CAMBIADO: A veces 2.5 da timeout. Si sigue pasando, cámbialo a "gemini-1.5-flash"
 const MODELO_USADO = "gemini-2.5-flash"; 
 const footballHeaders = { 'X-Auth-Token': process.env.FOOTBALL_API_KEY };
 
@@ -54,6 +55,7 @@ async function llamarGeminiSeguro(prompt) {
             contents: prompt
         });
 
+        // AUMENTADO A 45 SEGUNDOS PARA EVITAR TIMEOUT EN ANÁLISIS COMPLEJOS
         const timeoutError = new Promise((_, reject) => 
             setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 45000)
         );
@@ -352,6 +354,7 @@ async function consultarRadar(chatId, home, away) {
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar no disponible."); }
 }
 
+// --- FUNCIÓN DE AUDITORÍA TOTALMENTE MEJORADA ---
 async function ejecutarAuditoria(chatId) {
     const pendientes = await Prediccion.find({ estado: 'PENDIENTE' });
     if (!pendientes.length) return enviarMensajeSeguro(chatId, "✅ Todo auditado.");
@@ -361,17 +364,31 @@ async function ejecutarAuditoria(chatId) {
 
     for (const p of pendientes) {
         try {
-            await delay(2000); 
+            await delay(2000); // Respetamos el límite de la API
+            
+            // 1. Ampliamos el rango de búsqueda (-1 día a +1 día)
+            const fechaD = new Date(p.fechaPartido);
+            const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 1);
+            const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 1);
+
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
                 headers: footballHeaders, 
-                params: { status: 'FINISHED', dateFrom: p.fechaPartido, dateTo: p.fechaPartido }
+                params: { 
+                    status: 'FINISHED', 
+                    dateFrom: antes.toISOString().split('T')[0], 
+                    dateTo: despues.toISOString().split('T')[0] 
+                }
             });
             
-            const match = res.data.matches.find(m => m.homeTeam.name === p.equipoLocal && m.awayTeam.name === p.equipoVisita);
+            // 2. Búsqueda flexible de nombres de equipos
+            const match = res.data.matches.find(m => 
+                (m.homeTeam.name.includes(p.equipoLocal) || p.equipoLocal.includes(m.homeTeam.name)) &&
+                (m.awayTeam.name.includes(p.equipoVisita) || p.equipoVisita.includes(m.awayTeam.name))
+            );
 
             if (match && match.score.fullTime.home !== null) {
-                // Si la IA mandó a "PASAR / NO VALOR" (Stake 0), no lo contamos como pérdida ni ganancia
-                if (p.montoApostado === 0 || p.pickIA.includes("PASAR")) {
+                // 3. Manejo de apuestas "NO BET" o Stake 0
+                if (p.montoApostado === 0 || p.pickIA.toUpperCase().includes("PASAR")) {
                     p.estado = 'ANULADA';
                     p.resultadoReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
                     await p.save();
@@ -380,7 +397,7 @@ async function ejecutarAuditoria(chatId) {
                 }
 
                 const marcadorReal = `${match.score.fullTime.home}-${match.score.fullTime.away}`;
-                const prompt = `Actúa como Juez. Apuesta: "${p.pickIA}". Resultado: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}. Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
+                const prompt = `Actúa como Juez. Apuesta: "${p.pickIA}". Resultado del partido: ${match.homeTeam.name} ${marcadorReal} ${match.awayTeam.name}. Responde SOLO con una palabra: "GANADA" o "PERDIDA".`;
                 
                 const veredicto = await llamarGeminiSeguro(prompt);
                 const estadoFinal = veredicto.toUpperCase().includes('GAN') ? 'GANADA' : 'PERDIDA';
@@ -389,10 +406,12 @@ async function ejecutarAuditoria(chatId) {
                 p.resultadoReal = marcadorReal;
                 await p.save();
                 
-                await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}`);
+                await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}\nPick original: ${p.pickIA}`);
                 if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
+            } else {
+                console.log(`Auditoria pendiente: ${p.equipoLocal} vs ${p.equipoVisita} aún no termina o no se encontró.`);
             }
-        } catch (e) { console.log(`Skip audit: ${p.equipoLocal}`); }
+        } catch (e) { console.log(`Error auditando ${p.equipoLocal}: ${e.message}`); }
     }
     enviarMensajeSeguro(chatId, `📊 *Resumen Auditoría:*\n✅ +${ganadas} Ganadas\n❌ -${perdidas} Perdidas\n⚪ ${anuladas} Evitadas (No Bet)`);
 }
@@ -440,4 +459,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V8.2 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.3 Online'); }).listen(PORT);
