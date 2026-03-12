@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.6 (IA AVANZADA + AUDITORÍA DE PRECISIÓN) ---");
+console.log("--- INICIANDO BOT V8.7 (IA AVANZADA + EFECTIVIDAD DE BANCA) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
@@ -218,7 +218,7 @@ async function listarPartidos(chatId, code) {
             partidosCache.set(String(m.id), { home: h, away: a, date: d, code: code });
 
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
-            const btnText = existe ? "✅ Ver Pick" : "🧠 Analizar BD+IA";
+            const btnText = existe ? "✅ Ver Pick Guardado" : "🧠 Analizar BD+IA";
             
             await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*\n📅 ${d}`, {
                 parse_mode: 'Markdown',
@@ -245,13 +245,13 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     }
 
     bot.sendChatAction(chatId, 'typing');
-    enviarMensajeSeguro(chatId, "🧠 *Cruzando datos con la BD y generando análisis...*");
+    enviarMensajeSeguro(chatId, "🧠 *Cruzando datos con la BD y generando análisis estratégico...*");
 
     try {
         const racha = await obtenerRacha(code, home, away);
         const historialBD = await obtenerHistorialBD(home, away);
         
-        const prompt = `Actúa como un Analista Profesional de Trading Deportivo con 20 años de experiencia. Tu objetivo no es "adivinar" quién gana, sino encontrar "Value Bets".
+        const prompt = `Actúa como un Tipster Profesional y Analista Cuantitativo de Apuestas Deportivas. Tu objetivo no es "adivinar el ganador", sino encontrar "Value Bets" (Apuestas de Valor) reales.
 
 DATOS CLAVE DEL PARTIDO:
 - Encuentro: ${home} vs ${away}
@@ -261,24 +261,24 @@ DATOS CLAVE DEL PARTIDO:
 CONTEXTO HISTÓRICO (RACHA RECIENTE):
 ${racha}
 
-HISTORIAL DE RENDIMIENTO EN LA BASE DE DATOS:
+HISTORIAL DE RENDIMIENTO EN TU BASE DE DATOS:
 ${historialBD}
 
-INSTRUCCIONES DE ANÁLISIS:
-1. ANÁLISIS DE ESTILOS: Compara cómo el estilo táctico del local afecta al visitante basado en las rachas.
-2. FILTRO DE PESIMISMO: Dime por qué esta apuesta PODRÍA PERDERSE.
-3. CRITERIO DE "NO BET": Si los datos son contradictorios o no hay una ventaja estadística clara, tu recomendación DEBE ser "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
-4. AJUSTE DE STAKE: Escala de 1 a 10. Solo usa Stake 8-10 si la probabilidad es abrumadora.
+INSTRUCCIONES DE ANÁLISIS ESTRATÉGICO:
+1. MERCADOS ALTERNATIVOS: No te limites al 1X2 (Ganador). Evalúa rigurosamente mercados como: Over/Under de goles, Ambos Equipos Marcan (BTTS), Hándicap Asiático y Doble Oportunidad.
+2. ANÁLISIS TÁCTICO: Basa tu pick en cruce de estilos (ej. "el visitante juega al contragolpe y el local sufre con defensas altas").
+3. CRITERIO DE "NO BET": Si es un partido impredecible, de alto riesgo, o donde las cuotas de las casas de apuestas probablemente no tengan valor, tu recomendación DEBE ser OBLIGATORIAMENTE "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
+4. GESTIÓN DE STAKE (Riesgo): Escala de 1 a 10. Solo usa Stake 8-10 si hay una ineficiencia del mercado abrumadora. Stake 1-3 para apuestas de cuota alta/riesgo alto.
 
 REQUISITOS DEL FORMATO DE SALIDA (JSON PURO):
-Responde ÚNICAMENTE con un objeto JSON. No incluyas explicaciones fuera del JSON, ni bloques de código (ni \`\`\`json).
+Responde ÚNICAMENTE con un objeto JSON. No incluyas explicaciones fuera del JSON, ni bloques de código markdown.
 {
-  "pick": "Escribe aquí la apuesta. Si no es clara, pon 'PASAR / NO VALOR'",
+  "pick": "Escribe aquí la selección de apuesta clara (Ej: Local DNB, Over 2.5, Empate). Si no es clara, pon 'PASAR / NO VALOR'",
   "confianza": "🟢, 🟡 o 🔴",
   "stake": (un número del 0 al 10),
-  "analisis": "Resumen técnico de la ventaja estadística (max 250 caracteres).",
-  "marcador": "Resultado exacto más probable.",
-  "consejo": "Advertencia específica sobre qué factor externo podría arruinar el pick."
+  "analisis": "Resumen táctico y estadístico de por qué esta apuesta tiene valor (max 300 caracteres).",
+  "marcador": "Resultado exacto más probable (Ej: 2-1).",
+  "consejo": "Advertencia: ¿Qué factor específico del partido podría hacer que esta apuesta se pierda?"
 }`;
 
         const rawText = await llamarGeminiSeguro(prompt);
@@ -294,11 +294,11 @@ Responde ÚNICAMENTE con un objeto JSON. No incluyas explicaciones fuera del JSO
         const msgFinal = `🎯 *PICK:* ${datos.pick}
 ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 💰 *Stake:* ${datos.stake}/10
-⚽ *Marcador:* ${datos.marcador}
+⚽ *Marcador Proyectado:* ${datos.marcador}
 
 💡 *Análisis:* ${datos.analisis}
 
-⚠️ *Advertencia:* _${datos.consejo}_`;
+⚠️ *Peligro:* _${datos.consejo}_`;
 
         const nueva = new Prediccion({
             partidoId: id, equipoLocal: home, equipoVisita: away, fechaPartido: date,
@@ -318,7 +318,8 @@ ${datos.confianza} *Confianza:* ${getNombreConfianza(datos.confianza)}
 function extraerDatosDeTexto(rawText) {
     let datos = { pick: "Error lectura", confianza: "🟡", stake: 0, analisis: "", marcador: "?", consejo: "" };
     try {
-        let jsonClean = typeof rawText === 'string' ? rawText.replace(/```json/g, '').replace(/```/g, '').trim() : "";
+        // SOLUCIÓN: Usamos `{3}` para representar las 3 comillas invertidas y evitar que rompa el markdown del Canvas
+        let jsonClean = typeof rawText === 'string' ? rawText.replace(/`{3}json/g, '').replace(/`{3}/g, '').trim() : "";
         const firstOpen = jsonClean.indexOf('{');
         const lastClose = jsonClean.lastIndexOf('}');
         
@@ -350,7 +351,6 @@ async function consultarRadar(chatId, home, away) {
     } catch (e) { enviarMensajeSeguro(chatId, "❌ Radar no disponible."); }
 }
 
-// --- FUNCIÓN DE AUDITORÍA V8.6 (BÚSQUEDA POR LIGA SIN FILTRO DE ESTADO) ---
 function normalizarTexto(texto) {
     if (!texto) return "";
     return texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -365,13 +365,12 @@ async function ejecutarAuditoria(chatId) {
 
     for (const p of pendientes) {
         try {
-            await delay(7000); // Vital para no ser baneados por rate limit
+            await delay(7000); 
             
             const fechaD = new Date(p.fechaPartido);
             const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 3);
             const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 3);
 
-            // CLAVE: Buscamos en la liga específica (p.liga) y le QUITAMOS el filtro "status: FINISHED"
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
                 headers: footballHeaders, 
                 params: { 
@@ -391,7 +390,6 @@ async function ejecutarAuditoria(chatId) {
             });
 
             if (match) {
-                // Evaluamos manualmente el estado
                 if (match.status === 'FINISHED' || match.status === 'AWARDED') {
                     if (p.montoApostado === 0 || p.pickIA.toUpperCase().includes("PASAR")) {
                         p.estado = 'ANULADA';
@@ -414,7 +412,6 @@ async function ejecutarAuditoria(chatId) {
                     await enviarMensajeSeguro(chatId, `${estadoFinal === 'GANADA'?'✅':'❌'} *${p.equipoLocal} vs ${p.equipoVisita}*\nResultado: ${marcadorReal}\nPick original: ${p.pickIA}`);
                     if (estadoFinal === 'GANADA') ganadas++; else perdidas++;
                 } else {
-                    // El partido existe pero la API gratuita aún no lo marca como terminado
                     console.log(`Auditoria pausada: ${p.equipoLocal} figura como ${match.status}`);
                     await enviarMensajeSeguro(chatId, `⏳ *${p.equipoLocal} vs ${p.equipoVisita}*\n_La API indica estado: ${match.status}. Se auditará cuando se actualice._`);
                 }
@@ -430,13 +427,36 @@ async function ejecutarAuditoria(chatId) {
 
 async function mostrarBanca(chatId) {
     const historial = await Prediccion.find({ estado: { $ne: 'PENDIENTE' } });
+    
     let saldo = 0;
+    let ganadas = 0;
+    let perdidas = 0;
+
     historial.forEach(p => {
-        if (p.estado === 'GANADA') saldo += (p.montoApostado * 0.85);
-        else if (p.estado === 'PERDIDA') saldo -= p.montoApostado;
+        if (p.estado === 'GANADA') {
+            saldo += (p.montoApostado * 0.85); // Calculamos beneficio en base a cuota promedio de 1.85
+            ganadas++;
+        }
+        else if (p.estado === 'PERDIDA') {
+            saldo -= p.montoApostado;
+            perdidas++;
+        }
     });
+
+    // Calcular el porcentaje de acierto
+    const apuestasValidas = ganadas + perdidas;
+    const porcentajeEfectividad = apuestasValidas > 0 ? ((ganadas / apuestasValidas) * 100).toFixed(1) : 0;
+
     const emoji = saldo >= 0 ? '🤑' : '📉';
-    enviarMensajeSeguro(chatId, `💰 *BANCA ACTUAL*\n\nSaldo Neto (Stakes): ${saldo.toFixed(2)} U ${emoji}\nApuestas evaluadas: ${historial.length}`);
+    const colorEfectividad = porcentajeEfectividad >= 55 ? '🔥' : (porcentajeEfectividad >= 45 ? '⚖️' : '⚠️');
+
+    const mensajeBanca = `💰 *ESTADO DE LA BANCA* 💰\n\n` +
+                         `📊 *Picks Resueltos:* ${apuestasValidas} (✅ ${ganadas} | ❌ ${perdidas})\n` +
+                         `🎯 *Efectividad:* ${porcentajeEfectividad}% ${colorEfectividad}\n` +
+                         `📈 *Saldo Neto (U):* ${saldo.toFixed(2)} ${emoji}\n\n` +
+                         `_(Las apuestas "No Bet" o anuladas no afectan la efectividad)_`;
+
+    enviarMensajeSeguro(chatId, mensajeBanca);
 }
 
 async function exportarCSV(chatId) {
@@ -471,4 +491,4 @@ function getNombreConfianza(simbolo) {
 }
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => { res.end('Bot V8.6 Online'); }).listen(PORT);
+http.createServer((req, res) => { res.end('Bot V8.7 Online'); }).listen(PORT);
