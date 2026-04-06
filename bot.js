@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.8 (FIX RED + MUNDIAL WC) ---");
+console.log("--- INICIANDO BOT V8.8 (FIX RED + MUNDIAL WC + REINTENTOS) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
@@ -15,15 +15,15 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const MODELO_USADO = "gemini-2.5-flash"; 
 const footballHeaders = { 
     'X-Auth-Token': process.env.FOOTBALL_API_KEY,
-    'Connection': 'keep-alive' // Mantiene la conexión abierta en Render
+    'Connection': 'keep-alive' 
 };
 
 // --- 2. INICIALIZACIÓN DEL BOT CON TOLERANCIA A FALLOS ---
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { 
     polling: {
-        interval: 2000, // Subido a 2s para evitar bloqueos ETELEGRAM en Render
+        interval: 2000, 
         autoStart: true,
-        params: { timeout: 50 } // Aumentado para mantener la conexión más estable
+        params: { timeout: 50 } 
     } 
 });
 
@@ -31,7 +31,6 @@ const partidosCache = new Map();
 
 // --- 3. MANEJO DE ERRORES DE CONEXIÓN ---
 bot.on('polling_error', (error) => {
-    // Silenciamos los errores de red comunes para no saturar el log de Render
     if (error.code === 'EFATAL' || error.code === 'ETELEGRAM' || error.code === 'ECONNRESET') return;
     console.log(`⚠️ Red inestable (${error.code || error.message}). Reintentando...`);
 });
@@ -40,10 +39,32 @@ process.on('uncaughtException', (err) => {
     console.error('❌ Error Inesperado (No Fatal):', err.message);
 });
 
+// --- SISTEMA DE RED ROBUSTO (REINTENTOS AXIOS) ---
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function fetchFootballAPI(url, params, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await axios.get(url, {
+                headers: footballHeaders,
+                params: params,
+                timeout: 12000, // Timeout más corto para fallar rápido y reintentar
+                family: 4 // Mantiene la resolución IPv4 para Render
+            });
+        } catch (error) {
+            const isRateLimit = error.response?.status === 429;
+            if (i === retries - 1) throw error; // Si es el último intento, arroja el error
+
+            const waitTime = isRateLimit ? 10000 : (2000 * (i + 1)); // Espera más si nos limitaron
+            console.log(`⚠️ API Fútbol colgada (${error.code || error.message}). Intento ${i + 1}/${retries} fallido. Reintentando en ${waitTime/1000}s...`);
+            await delay(waitTime);
+        }
+    }
+}
+
 // --- 4. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO GEMINI) ---
 let lastRequestTime = 0;
 const COOLDOWN_MS = 4000; 
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function llamarGeminiSeguro(prompt) {
     const tiempoDesdeUltima = Date.now() - lastRequestTime;
@@ -148,7 +169,7 @@ bot.onText(/\/start/, async (msg) => {
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
                 [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }],
                 [{ text: '🏆 Champions', callback_data: 'comp_CL' }, { text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }],
-                [{ text: '🌍 Mundial (WC)', callback_data: 'comp_WC' }], // <-- AÑADIDO MUNDIAL
+                [{ text: '🌍 Mundial (WC)', callback_data: 'comp_WC' }],
                 [{ text: '⏳ PENDIENTES', callback_data: 'ver_pendientes' }, { text: '💰 BANCA', callback_data: 'ver_banca' }],
                 [{ text: '👨‍⚖️ AUDITAR JUEZ', callback_data: 'ver_auditoria' }, { text: '📥 EXPORTAR', callback_data: 'exportar_excel' }]
             ]
@@ -205,15 +226,12 @@ async function listarPartidos(chatId, code) {
 
         console.log(`📡 Buscando partidos ${code} entre ${sHoy} y ${sFuturo}`);
 
-        // SOLUCIÓN FIX RED: family 4 y timeout extendido
-        const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
-            headers: footballHeaders, 
-            params: { dateFrom: sHoy, dateTo: sFuturo, status: 'SCHEDULED' },
-            timeout: 30000, 
-            family: 4
+        // FIX: Usando el envoltorio de reintentos
+        const res = await fetchFootballAPI(`https://api.football-data.org/v4/competitions/${code}/matches`, { 
+            dateFrom: sHoy, dateTo: sFuturo, status: 'SCHEDULED' 
         });
 
-        const matches = res.data.matches || [];
+        const matches = res?.data?.matches || [];
         
         if (matches.length === 0) {
             return enviarMensajeSeguro(chatId, `⚠️ No hay partidos de ${code} hasta el ${sFuturo}.`);
@@ -238,7 +256,7 @@ async function listarPartidos(chatId, code) {
         }
     } catch (e) { 
         console.error("🔴 Error API Fútbol:", e.message);
-        enviarMensajeSeguro(chatId, "❌ La API tardó en responder. Intenta de nuevo en unos segundos.");
+        enviarMensajeSeguro(chatId, "❌ La API tardó en responder tras varios intentos. Intenta de nuevo en unos segundos.");
     }
 }
 
@@ -379,18 +397,14 @@ async function ejecutarAuditoria(chatId) {
             const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 3);
             const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 3);
 
-            // SOLUCIÓN FIX RED: family 4 y timeout extendido
-            const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
-                headers: footballHeaders, 
-                params: { 
-                    dateFrom: antes.toISOString().split('T')[0], 
-                    dateTo: despues.toISOString().split('T')[0] 
-                },
-                timeout: 30000,
-                family: 4
+            // FIX: Usando el envoltorio de reintentos para evitar crasheos de auditoría
+            const res = await fetchFootballAPI(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, { 
+                dateFrom: antes.toISOString().split('T')[0], 
+                dateTo: despues.toISOString().split('T')[0] 
             });
             
-            const match = res.data.matches.find(m => {
+            const matches = res?.data?.matches || [];
+            const match = matches.find(m => {
                 const apiHome = normalizarTexto(m.homeTeam.name);
                 const apiAway = normalizarTexto(m.awayTeam.name);
                 const dbHome = normalizarTexto(p.equipoLocal);
@@ -483,14 +497,13 @@ async function exportarCSV(chatId) {
 async function obtenerRacha(code, home, away) {
     try {
         await delay(500);
-        // SOLUCIÓN FIX RED: family 4 y timeout extendido
-        const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
-            headers: footballHeaders, 
-            params: { status: 'FINISHED', limit: 20 },
-            timeout: 30000,
-            family: 4
+        // FIX: Usando el envoltorio de reintentos
+        const res = await fetchFootballAPI(`https://api.football-data.org/v4/competitions/${code}/matches`, { 
+            status: 'FINISHED', limit: 20 
         });
-        return res.data.matches
+        
+        const matches = res?.data?.matches || [];
+        return matches
             .filter(m => m.homeTeam.name === home || m.awayTeam.name === home || m.homeTeam.name === away || m.awayTeam.name === away)
             .slice(0, 5)
             .map(m => `${m.homeTeam.name} ${m.score.fullTime.home}-${m.score.fullTime.away} ${m.awayTeam.name}`)
