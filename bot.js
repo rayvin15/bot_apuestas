@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.9 (IA AVANZADA + ANTI-BLOCK + WC 2026) ---");
+console.log("--- INICIANDO BOT V8.9.1 (IA AVANZADA + ANTI-BLOCK + WC 2026) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
@@ -148,8 +148,8 @@ bot.onText(/\/start/, async (msg) => {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
                 [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }],
-                // ⚽ MEJORA 4: Botón del Mundial añadido aquí
-                [{ text: '🏆 Champions', callback_data: 'comp_CL' }, { text: '🌎 Mundial WC', callback_data: 'comp_WC' }],
+                [{ text: '🏆 Champions', callback_data: 'comp_CL' }, { text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }],
+                [{ text: '🌎 Mundial 2026', callback_data: 'comp_WC' }], // <-- Añadido en su propia fila
                 [{ text: '⏳ PENDIENTES', callback_data: 'ver_pendientes' }, { text: '💰 BANCA', callback_data: 'ver_banca' }],
                 [{ text: '👨‍⚖️ AUDITAR JUEZ', callback_data: 'ver_auditoria' }, { text: '📥 EXPORTAR', callback_data: 'exportar_excel' }]
             ]
@@ -507,7 +507,6 @@ function getNombreConfianza(simbolo) {
 
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => { 
-    // Añadido encabezado 200 explícito para evitar fallos tontos con el ping
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot V8.9 Online'); 
+    res.end('Bot V8.9.1 Online'); 
 }).listen(PORT);
