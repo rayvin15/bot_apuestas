@@ -52,49 +52,32 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         await delay(COOLDOWN_MS - tiempoDesdeUltima);
     }
 
-    // 🔄 ROTACIÓN DE MODELOS CORREGIDA Y ESCALONADA
-    // Intento 1 (índice 0): gemini-2.5-flash (Experimental/Avanzado)
-    // Intento 2 (índice 1): gemini-2.0-flash (Producción/Estable y muy rápido)
-    // Intento 3 (índice 2): gemini-1.5-flash-8b (Súper ligero/Respaldo final a prueba de fallos)
-    const modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b"];
+    // 🔄 ORDEN PRIORIZADO SEGÚN TU SOLICITUD:
+    // 1. Gemini 2.5 Flash (Calidad máxima - 20 RPD)
+    // 2. Gemini 3.1 Flash Lite (Respaldo masivo - 500 RPD)
+    // 3. Gemini 1.5 Flash (Última instancia)
+    const modelos = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-1.5-flash"];
     const modeloActual = modelos[3 - intentos]; 
 
     try {
         console.log(`🚀 Consultando a ${modeloActual}... (Intento: ${4 - intentos})`);
         
-        const peticionIA = ai.models.generateContent({
-            model: modeloActual,
-            contents: prompt
-        });
-
-        const timeoutError = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("La IA tardó demasiado (Timeout)")), 45000)
-        );
-
-        const response = await Promise.race([peticionIA, timeoutError]);
+        const model = ai.getGenerativeModel({ model: modeloActual });
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
 
         lastRequestTime = Date.now();
-        
-        let text = "";
-        if (response.text) {
-             text = typeof response.text === 'function' ? response.text() : response.text;
-        } else {
-             text = JSON.stringify(response); 
-        }
-        return text;
+        return response.text();
 
     } catch (error) {
-        console.error(`❌ Error AI en ${modeloActual}:`, error.message);
-        
-        // Ampliamos la captura: Si es 503 (Saturado), 429 (Cuota), 500 (Interno) o 404 (No encontrado)
-        if ((error.message.includes('503') || error.message.includes('429') || error.message.includes('500') || error.message.includes('404')) && intentos > 1) {
-            const espera = (4 - intentos) * 3000; // Espera 3s, luego 6s
-            console.log(`⏳ Fallo en ${modeloActual}. Saltando al siguiente motor en ${espera/1000}s...`);
-            await delay(espera);
+        // Si el error es 429 (Cuota) o 503 (Saturación), saltamos de inmediato al siguiente
+        if ((error.message.includes('429') || error.message.includes('503') || error.message.includes('404')) && intentos > 1) {
+            console.log(`⚠️ ${modeloActual} agotado o no disponible. Pasando al siguiente motor...`);
+            // Sin delay largo para que el usuario no espere de más
+            await delay(1000); 
             return llamarGeminiSeguro(prompt, intentos - 1);
         }
 
-        // Si ya se acabaron los 3 intentos o es un error grave distinto
         throw error;
     }
 }
