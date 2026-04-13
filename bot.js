@@ -52,32 +52,32 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         await delay(COOLDOWN_MS - tiempoDesdeUltima);
     }
 
-    // 🔄 ORDEN PRIORIZADO SEGÚN TU SOLICITUD:
-    // 1. Gemini 2.5 Flash (Calidad máxima - 20 RPD)
-    // 2. Gemini 3.1 Flash Lite (Respaldo masivo - 500 RPD)
-    // 3. Gemini 1.5 Flash (Última instancia)
+    // 🔄 Rotación según tu preferencia
     const modelos = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-1.5-flash"];
     const modeloActual = modelos[3 - intentos]; 
 
     try {
         console.log(`🚀 Consultando a ${modeloActual}... (Intento: ${4 - intentos})`);
         
-        const model = ai.getGenerativeModel({ model: modeloActual });
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
+        // NUEVA SINTAXIS: Se usa ai.models.generateContent directamente
+        const response = await ai.models.generateContent({
+            model: modeloActual,
+            contents: [{ role: "user", parts: [{ text: prompt }] }]
+        });
 
         lastRequestTime = Date.now();
-        return response.text();
+        
+        // En el nuevo SDK, el texto viene directamente en response.text
+        return response.text;
 
     } catch (error) {
-        // Si el error es 429 (Cuota) o 503 (Saturación), saltamos de inmediato al siguiente
+        console.error(`❌ Error AI en ${modeloActual}:`, error.message);
+        
         if ((error.message.includes('429') || error.message.includes('503') || error.message.includes('404')) && intentos > 1) {
-            console.log(`⚠️ ${modeloActual} agotado o no disponible. Pasando al siguiente motor...`);
-            // Sin delay largo para que el usuario no espere de más
-            await delay(1000); 
+            console.log(`⚠️ Fallo en ${modeloActual}. Saltando al siguiente motor...`);
+            await delay(2000);
             return llamarGeminiSeguro(prompt, intentos - 1);
         }
-
         throw error;
     }
 }
