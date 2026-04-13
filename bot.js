@@ -52,32 +52,43 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         await delay(COOLDOWN_MS - tiempoDesdeUltima);
     }
 
-    // 🔄 Rotación según tu preferencia
-    const modelos = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-1.5-flash"];
+    // 🔄 NOMBRES DE MODELO ACTUALIZADOS PARA 2026
+    // Importante: Usamos el nombre técnico exacto que espera la API v1beta
+    const modelos = [
+        "gemini-2.5-flash",      // Prioridad 1 (20 RPD)
+        "gemini-3.1-flash-lite", // Prioridad 2 (500 RPD)
+        "gemini-3-flash-preview"         // Prioridad 3 (20 RPD)
+    ];
+    
     const modeloActual = modelos[3 - intentos]; 
 
     try {
         console.log(`🚀 Consultando a ${modeloActual}... (Intento: ${4 - intentos})`);
         
-        // NUEVA SINTAXIS: Se usa ai.models.generateContent directamente
+        // Usamos la sintaxis del nuevo SDK @google/genai que pegaste anteriormente
         const response = await ai.models.generateContent({
-            model: modeloActual,
+            model: modeloActual, // El SDK suele añadir "models/" automáticamente
             contents: [{ role: "user", parts: [{ text: prompt }] }]
         });
 
         lastRequestTime = Date.now();
-        
-        // En el nuevo SDK, el texto viene directamente en response.text
         return response.text;
 
     } catch (error) {
-        console.error(`❌ Error AI en ${modeloActual}:`, error.message);
+        const errorMsg = error.message || "";
+        console.error(`❌ Error AI en ${modeloActual}:`, errorMsg);
         
-        if ((error.message.includes('429') || error.message.includes('503') || error.message.includes('404')) && intentos > 1) {
-            console.log(`⚠️ Fallo en ${modeloActual}. Saltando al siguiente motor...`);
+        // Si el error es 404, probamos forzando el prefijo "models/" manualmente en el siguiente intento
+        if (errorMsg.includes('404') && intentos > 1) {
+            console.log(`⚠️ Modelo no encontrado. Intentando alternativa...`);
+            // Aquí podrías intentar forzar: "models/" + modelos[4 - intentos] si fuera necesario
+        }
+
+        if ((errorMsg.includes('429') || errorMsg.includes('503') || errorMsg.includes('404')) && intentos > 1) {
             await delay(2000);
             return llamarGeminiSeguro(prompt, intentos - 1);
         }
+
         throw error;
     }
 }
