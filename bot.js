@@ -52,10 +52,12 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         await delay(COOLDOWN_MS - tiempoDesdeUltima);
     }
 
-    // 🔄 MEJORA DE MOTOR: Lista de modelos (Principal y Respaldo)
-    const modelos = ["gemini-2.5-flash", "gemini-1.5-flash"];
-    // Si es el primer intento usa el 2.5, si falla y reintenta usa el 1.5
-    const modeloActual = intentos < 3 ? modelos[1] : modelos[0];
+    // 🔄 ROTACIÓN DE MODELOS CORREGIDA Y ESCALONADA
+    // Intento 1 (índice 0): gemini-2.5-flash (Experimental/Avanzado)
+    // Intento 2 (índice 1): gemini-2.0-flash (Producción/Estable y muy rápido)
+    // Intento 3 (índice 2): gemini-1.5-flash-8b (Súper ligero/Respaldo final a prueba de fallos)
+    const modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b"];
+    const modeloActual = modelos[3 - intentos]; 
 
     try {
         console.log(`🚀 Consultando a ${modeloActual}... (Intento: ${4 - intentos})`);
@@ -84,15 +86,15 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
     } catch (error) {
         console.error(`❌ Error AI en ${modeloActual}:`, error.message);
         
-        // Si el error es 503 (Saturación), 500 (Interno) o 429 (Límite), saltamos al modelo de respaldo
-        if ((error.message.includes('503') || error.message.includes('500') || error.message.includes('429')) && intentos > 1) {
-            const espera = (4 - intentos) * 3000; // Espera incremental: 3s, luego 6s
-            console.log(`⏳ Saturación detectada. Cambiando al motor de respaldo en ${espera/1000}s...`);
+        // Ampliamos la captura: Si es 503 (Saturado), 429 (Cuota), 500 (Interno) o 404 (No encontrado)
+        if ((error.message.includes('503') || error.message.includes('429') || error.message.includes('500') || error.message.includes('404')) && intentos > 1) {
+            const espera = (4 - intentos) * 3000; // Espera 3s, luego 6s
+            console.log(`⏳ Fallo en ${modeloActual}. Saltando al siguiente motor en ${espera/1000}s...`);
             await delay(espera);
             return llamarGeminiSeguro(prompt, intentos - 1);
         }
 
-        // Si se acabaron los intentos o es otro error, lo lanzamos
+        // Si ya se acabaron los 3 intentos o es un error grave distinto
         throw error;
     }
 }
