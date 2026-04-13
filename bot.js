@@ -12,7 +12,7 @@ console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const MODELO_USADO = "gemini-2.5-flash"; 
+const MODELO_PRINCIPAL = "gemini-2.5-flash"; 
 
 // 🛡️ MEJORA 1: User-Agent Real para evitar bloqueos por cortafuegos
 const footballHeaders = { 
@@ -41,22 +41,27 @@ process.on('uncaughtException', (err) => {
     console.error('❌ Error Inesperado (No Fatal):', err.message);
 });
 
-// --- 4. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO GEMINI) ---
+// --- 4. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO GEMINI Y FALLBACK) ---
 let lastRequestTime = 0;
 const COOLDOWN_MS = 4000; 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function llamarGeminiSeguro(prompt) {
+async function llamarGeminiSeguro(prompt, intentos = 3) {
     const tiempoDesdeUltima = Date.now() - lastRequestTime;
     if (tiempoDesdeUltima < COOLDOWN_MS) {
         await delay(COOLDOWN_MS - tiempoDesdeUltima);
     }
 
+    // 🔄 MEJORA DE MOTOR: Lista de modelos (Principal y Respaldo)
+    const modelos = ["gemini-2.5-flash", "gemini-1.5-flash"];
+    // Si es el primer intento usa el 2.5, si falla y reintenta usa el 1.5
+    const modeloActual = intentos < 3 ? modelos[1] : modelos[0];
+
     try {
-        console.log(`🚀 Consultando a ${MODELO_USADO}...`);
+        console.log(`🚀 Consultando a ${modeloActual}... (Intento: ${4 - intentos})`);
         
         const peticionIA = ai.models.generateContent({
-            model: MODELO_USADO,
+            model: modeloActual,
             contents: prompt
         });
 
@@ -77,10 +82,17 @@ async function llamarGeminiSeguro(prompt) {
         return text;
 
     } catch (error) {
-        console.error("❌ Error AI:", error.message);
-        if (error.message.includes('429') || error.message.includes('Quota')) {
-            throw new Error("⏳ Cuota agotada momentáneamente (Error 429).");
+        console.error(`❌ Error AI en ${modeloActual}:`, error.message);
+        
+        // Si el error es 503 (Saturación), 500 (Interno) o 429 (Límite), saltamos al modelo de respaldo
+        if ((error.message.includes('503') || error.message.includes('500') || error.message.includes('429')) && intentos > 1) {
+            const espera = (4 - intentos) * 3000; // Espera incremental: 3s, luego 6s
+            console.log(`⏳ Saturación detectada. Cambiando al motor de respaldo en ${espera/1000}s...`);
+            await delay(espera);
+            return llamarGeminiSeguro(prompt, intentos - 1);
         }
+
+        // Si se acabaron los intentos o es otro error, lo lanzamos
         throw error;
     }
 }
@@ -143,13 +155,13 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026 PRO*\n🤖 Modelo: ${MODELO_USADO}\n🛡️ Filtro de Valor: Activado`, {
+    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026 PRO*\n🤖 Modelo: ${MODELO_PRINCIPAL} (con auto-respaldo)\n🛡️ Filtro de Valor: Activado`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
                 [{ text: '🇮🇹 Serie A', callback_data: 'comp_SA' }, { text: '🇩🇪 Bundesliga', callback_data: 'comp_BL1' }],
                 [{ text: '🏆 Champions', callback_data: 'comp_CL' }, { text: '🇫🇷 Ligue 1', callback_data: 'comp_FL1' }],
-                [{ text: '🌎 Mundial 2026', callback_data: 'comp_WC' }], // <-- Añadido en su propia fila
+                [{ text: '🌎 Mundial 2026', callback_data: 'comp_WC' }],
                 [{ text: '⏳ PENDIENTES', callback_data: 'ver_pendientes' }, { text: '💰 BANCA', callback_data: 'ver_banca' }],
                 [{ text: '👨‍⚖️ AUDITAR JUEZ', callback_data: 'ver_auditoria' }, { text: '📥 EXPORTAR', callback_data: 'exportar_excel' }]
             ]
@@ -206,7 +218,6 @@ async function listarPartidos(chatId, code) {
 
         console.log(`📡 Buscando partidos ${code} entre ${sHoy} y ${sFuturo}`);
 
-        // 🛡️ MEJORAS 2 Y 3: family: 4 y timeout: 15000 aplicados
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders, 
             params: { dateFrom: sHoy, dateTo: sFuturo, status: 'SCHEDULED' },
@@ -380,7 +391,6 @@ async function ejecutarAuditoria(chatId) {
             const antes = new Date(fechaD); antes.setDate(fechaD.getDate() - 3);
             const despues = new Date(fechaD); despues.setDate(fechaD.getDate() + 3);
 
-            // 🛡️ MEJORAS 2 Y 3 aplicadas aquí también
             const res = await axios.get(`https://api.football-data.org/v4/competitions/${p.liga}/matches`, {
                 headers: footballHeaders, 
                 params: { 
@@ -484,7 +494,6 @@ async function exportarCSV(chatId) {
 async function obtenerRacha(code, home, away) {
     try {
         await delay(500);
-        // 🛡️ MEJORAS 2 Y 3 aplicadas aquí también
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders, 
             params: { status: 'FINISHED', limit: 20 },
