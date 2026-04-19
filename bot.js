@@ -148,6 +148,11 @@ async function obtenerDatosLiveScore(home, away) {
             await browser.close();
         }
     }
+    // Dentro de tu función obtenerDatosLiveScore cambia la línea de launch por esta:
+browser = await chromium.launch({ 
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+});
 }
 
 async function enviarMensajeSeguro(chatId, texto, opciones = {}) {
