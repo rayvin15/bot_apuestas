@@ -96,17 +96,24 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
 async function obtenerDatosLiveScore(home, away) {
     console.log(`🔍 Iniciando Scraper Sigiloso para: ${home} vs ${away}`);
     let browser;
-    let datosExtra = { h2h: "", apiData: "" };
+    let datosExtra = { apiData: "" };
 
     try {
-        // 🚀 CONFIGURACIÓN CRÍTICA PARA RENDER/LINUX
+        const isRender = process.env.RENDER === 'true' || process.env.PORT;
+        
+        // Esta es la ruta donde termina el navegador cuando usas PLAYWRIGHT_BROWSERS_PATH=0
+        const manualPath = './node_modules/playwright-core/.local-browsers/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell';
+
         browser = await chromium.launch({
             headless: true,
+            // Intentamos la ruta manual si estamos en Render, si no, dejamos que Playwright decida
+            executablePath: isRender ? manualPath : undefined, 
             args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage', // Evita errores de memoria compartida en contenedores
-                '--single-process'         // Reduce el consumo de RAM en capas gratuitas
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--single-process',
+                '--no-zygote'
             ]
         });
 
@@ -116,59 +123,55 @@ async function obtenerDatosLiveScore(home, away) {
         
         const page = await context.newPage();
 
-        // 🛡️ Optimización Anti-Bloqueo: Abortar carga de multimedia para ganar velocidad
-        await page.route('**/*.{png,jpg,jpeg,woff,woff2,css,svg}', route => route.abort());
+        // Bloqueamos multimedia para que Render no sufra con la RAM
+        await page.route('**/*.{png,jpg,jpeg,woff,woff2,css,svg,gif}', route => route.abort());
 
-        // 📡 Intercepción de red para capturar el JSON original de la API de LiveScore
+        // Escuchamos la API interna de LiveScore
         page.on('response', async response => {
             const url = response.url();
-            // Capturamos endpoints clave: H2H, alineaciones e incidentes previos
             if (url.includes('api/v1/') && response.status() === 200) {
                 try {
                     const json = await response.json();
                     if (url.includes('h2h') || url.includes('lineup') || url.includes('incidents')) {
-                        // Guardamos fragmentos significativos del JSON para la IA
-                        datosExtra.apiData += JSON.stringify(json).substring(0, 300) + " | ";
+                        datosExtra.apiData += JSON.stringify(json).substring(0, 400) + " | ";
                     }
-                } catch (e) { /* Error silencioso de parsing */ }
+                } catch (e) {}
             }
         });
 
-        // Navegación con timeout extendido para servidores lentos
+        // Vamos a la búsqueda
         await page.goto(`https://www.livescore.com/en/search/?q=${encodeURIComponent(home)}`, {
-            waitUntil: 'domcontentloaded',
-            timeout: 30000 
+            waitUntil: 'networkidle',
+            timeout: 45000 
         });
 
-        // Espera prudencial para que el JS de la página termine de renderizar los datos
-        await delay(5000); 
+        await delay(6000); 
 
-        // Extracción de datos del DOM como respaldo si la interceptación falla
-        const textoPantalla = await page.evaluate(() => document.body.innerText);
+        const textoLimpio = await page.evaluate(() => {
+            const elements = document.querySelectorAll('script, style, nav, footer');
+            elements.forEach(el => el.remove());
+            return document.body.innerText;
+        });
 
-        // Filtramos líneas que contengan información valiosa de "nicho"
-        const lineas = textoPantalla.split('\n');
+        const lineas = textoLimpio.split('\n');
         const contextoFiltrado = lineas
-            .filter(l => 
-                l.includes(home) || 
-                l.includes(away) || 
-                l.includes('Injured') || 
-                l.includes('Suspended') || 
-                l.includes('Lineup') ||
-                l.includes('Form')
-            )
-            .join(' - ')
-            .substring(0, 800); // Aumentamos un poco el contexto para Gemini
+            .map(l => l.trim())
+            .filter(l => l.length > 5 && (
+                l.includes(home) || l.includes(away) || 
+                l.includes('Injured') || l.includes('Form') || l.includes('H2H')
+            ))
+            .join(' | ')
+            .substring(0, 1000);
 
-        return `[DATOS RAW API]: ${datosExtra.apiData || 'N/A'}\n[CONTEXTO WEB]: ${contextoFiltrado || 'Sin datos adicionales encontrados.'}`;
+        return `[INFO API]: ${datosExtra.apiData || 'N/A'}\n[WEB]: ${contextoFiltrado || 'Sin extras.'}`;
 
     } catch (error) {
-        console.error("❌ Error en Scraper LiveScore:", error.message);
-        return "Nota: No se pudieron obtener datos extra de LiveScore (Posible bloqueo o timeout). Usando solo datos de API-Football.";
+        console.error("❌ Error Scraper:", error.message);
+        return "No se pudieron obtener datos extra de LiveScore.";
     } finally {
         if (browser) {
             await browser.close();
-            console.log(`✅ Scraper finalizado para ${home}`);
+            console.log(`✅ Scraper finalizado.`);
         }
     }
 }
