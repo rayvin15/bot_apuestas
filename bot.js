@@ -6,15 +6,19 @@ import http from 'http';
 import mongoose from 'mongoose';
 import fs from 'fs';
 
+// --- INTEGRACIÓN WEB SCRAPING ---
+import { chromium } from 'playwright-extra';
+import stealthPlugin from 'puppeteer-extra-plugin-stealth';
+chromium.use(stealthPlugin());
+
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V8.9.1 (IA AVANZADA + ANTI-BLOCK + WC 2026) ---");
+console.log("--- INICIANDO BOT V9.0 (IA AVANZADA + SCRAPING NICHO + ANTI-BLOCK) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const MODELO_PRINCIPAL = "gemini-2.5-flash"; 
 
-// 🛡️ MEJORA 1: User-Agent Real para evitar bloqueos por cortafuegos
 const footballHeaders = { 
     'X-Auth-Token': process.env.FOOTBALL_API_KEY,
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -41,7 +45,7 @@ process.on('uncaughtException', (err) => {
     console.error('❌ Error Inesperado (No Fatal):', err.message);
 });
 
-// --- 4. SISTEMA DE SEGURIDAD (ANTI-BLOQUEO GEMINI Y FALLBACK) ---
+// --- 4. SISTEMAS PRINCIPALES (IA Y SCRAPING) ---
 let lastRequestTime = 0;
 const COOLDOWN_MS = 4000; 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -52,12 +56,10 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         await delay(COOLDOWN_MS - tiempoDesdeUltima);
     }
 
-    // 🔄 NOMBRES DE MODELO ACTUALIZADOS PARA 2026
-    // Importante: Usamos el nombre técnico exacto que espera la API v1beta
     const modelos = [
-        "gemini-2.5-flash",      // Prioridad 1 (20 RPD)
-        "gemini-3.1-flash-lite", // Prioridad 2 (500 RPD)
-        "gemini-3-flash-preview"         // Prioridad 3 (20 RPD)
+        "gemini-2.5-flash",      
+        "gemini-3.1-flash-lite", 
+        "gemini-3-flash-preview"         
     ];
     
     const modeloActual = modelos[3 - intentos]; 
@@ -65,9 +67,8 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
     try {
         console.log(`🚀 Consultando a ${modeloActual}... (Intento: ${4 - intentos})`);
         
-        // Usamos la sintaxis del nuevo SDK @google/genai que pegaste anteriormente
         const response = await ai.models.generateContent({
-            model: modeloActual, // El SDK suele añadir "models/" automáticamente
+            model: modeloActual, 
             contents: [{ role: "user", parts: [{ text: prompt }] }]
         });
 
@@ -78,10 +79,8 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         const errorMsg = error.message || "";
         console.error(`❌ Error AI en ${modeloActual}:`, errorMsg);
         
-        // Si el error es 404, probamos forzando el prefijo "models/" manualmente en el siguiente intento
         if (errorMsg.includes('404') && intentos > 1) {
             console.log(`⚠️ Modelo no encontrado. Intentando alternativa...`);
-            // Aquí podrías intentar forzar: "models/" + modelos[4 - intentos] si fuera necesario
         }
 
         if ((errorMsg.includes('429') || errorMsg.includes('503') || errorMsg.includes('404')) && intentos > 1) {
@@ -90,6 +89,64 @@ async function llamarGeminiSeguro(prompt, intentos = 3) {
         }
 
         throw error;
+    }
+}
+
+// --- MÓDULO DE SCRAPING DE NICHO (LiveScore) ---
+async function obtenerDatosLiveScore(home, away) {
+    console.log(`🔍 Iniciando Scraper Sigiloso para: ${home} vs ${away}`);
+    let browser;
+    let datosExtra = { h2h: "", apiData: "" };
+
+    try {
+        // Lanzamos el navegador en modo incógnito y sin interfaz
+        browser = await chromium.launch({ headless: true });
+        const context = await browser.newContext();
+        const page = await context.newPage();
+
+        // 🛡️ Optimización Anti-Bloqueo: Abortar imágenes y CSS pesados
+        await page.route('**/*.{png,jpg,jpeg,woff,woff2,css}', route => route.abort());
+
+        // 📡 Intercepción de red: Capturamos los JSON internos de LiveScore antes de que se rendericen
+        page.on('response', async response => {
+            const url = response.url();
+            if (url.includes('api/v1/') && response.status() === 200) {
+                try {
+                    const json = await response.json();
+                    if (url.includes('h2h') || url.includes('lineup') || url.includes('incidents')) {
+                        datosExtra.apiData += JSON.stringify(json).substring(0, 300) + " | ";
+                    }
+                } catch (e) { /* Ignorar errores de lectura del stream JSON */ }
+            }
+        });
+
+        // Navegar a la búsqueda global de LiveScore
+        await page.goto(`https://www.livescore.com/en/search/?q=${encodeURIComponent(home)}`, { 
+            waitUntil: 'domcontentloaded', 
+            timeout: 15000 
+        });
+        
+        await delay(4000); // Esperar renderizado dinámico de la SPA
+
+        // Extraer texto DOM puro en caso de que la API interna haya cambiado sus rutas
+        const textoPantalla = await page.evaluate(() => document.body.innerText);
+        
+        // Filtramos solo líneas relevantes (lesionados, rachas H2H, formaciones probables)
+        const lineas = textoPantalla.split('\n');
+        const contextoFiltrado = lineas
+            .filter(l => l.includes(home) || l.includes(away) || l.includes('Injured') || l.includes('Suspended') || l.includes('Lineup'))
+            .join(' - ')
+            .substring(0, 600);
+
+        return `[JSON Interceptado]: ${datosExtra.apiData || 'N/A'}\n[Texto DOM Relevante]: ${contextoFiltrado || 'Sin menciones específicas.'}`;
+
+    } catch (error) {
+        console.error("❌ Error en Scraper LiveScore:", error.message);
+        return "Datos de nicho temporalmente no disponibles debido a medidas de seguridad o timeout de la web externa.";
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
     }
 }
 
@@ -122,7 +179,6 @@ const PrediccionSchema = new mongoose.Schema({
 const Prediccion = mongoose.models.Prediccion || mongoose.model('Prediccion', PrediccionSchema);
 const Config = mongoose.models.Config || mongoose.model('Config', new mongoose.Schema({ key: String, value: String }));
 
-// --- HISTORIAL DE LA BD ---
 async function obtenerHistorialBD(home, away) {
     try {
         const historial = await Prediccion.find({
@@ -151,7 +207,7 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     await Config.findOneAndUpdate({ key: 'adminChatId' }, { value: chatId }, { upsert: true });
 
-    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026 PRO*\n🤖 Modelo: ${MODELO_PRINCIPAL} (con auto-respaldo)\n🛡️ Filtro de Valor: Activado`, {
+    enviarMensajeSeguro(chatId, `🧠 *Tipster AI 2026 PRO*\n🤖 Modelo: ${MODELO_PRINCIPAL} (Auto-Respaldo)\n🛡️ Scraping: Activado (LiveScore)`, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: '🇪🇸 LaLiga', callback_data: 'comp_PD' }, { text: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier', callback_data: 'comp_PL' }],
@@ -212,8 +268,6 @@ async function listarPartidos(chatId, code) {
         const sHoy = fechaHoy.toISOString().split('T')[0];
         const sFuturo = fechaFuturo.toISOString().split('T')[0];
 
-        console.log(`📡 Buscando partidos ${code} entre ${sHoy} y ${sFuturo}`);
-
         const res = await axios.get(`https://api.football-data.org/v4/competitions/${code}/matches`, {
             headers: footballHeaders, 
             params: { dateFrom: sHoy, dateTo: sFuturo, status: 'SCHEDULED' },
@@ -235,7 +289,7 @@ async function listarPartidos(chatId, code) {
             partidosCache.set(String(m.id), { home: h, away: a, date: d, code: code });
 
             const existe = await Prediccion.exists({ partidoId: `${h}-${a}-${d}` });
-            const btnText = existe ? "✅ Ver Pick Guardado" : "🧠 Analizar BD+IA";
+            const btnText = existe ? "✅ Ver Pick Guardado" : "🧠 Analizar BD+IA+Scraping";
             
             await bot.sendMessage(chatId, `🏟️ *${h}* vs *${a}*\n📅 ${d}`, {
                 parse_mode: 'Markdown',
@@ -262,11 +316,15 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     }
 
     bot.sendChatAction(chatId, 'typing');
-    enviarMensajeSeguro(chatId, "🧠 *Cruzando datos con la BD y generando análisis estratégico...*");
+    enviarMensajeSeguro(chatId, "🧠 *Scrapeando datos en vivo, cruzando con BD y generando análisis estratégico...*");
 
     try {
-        const racha = await obtenerRacha(code, home, away);
-        const historialBD = await obtenerHistorialBD(home, away);
+        // Ejecutamos las llamadas de red pesadas de forma asíncrona
+        const [racha, historialBD, datosLiveScore] = await Promise.all([
+            obtenerRacha(code, home, away),
+            obtenerHistorialBD(home, away),
+            obtenerDatosLiveScore(home, away) // Llamada al nuevo Scraper
+        ]);
         
         const prompt = `Actúa como un Tipster Profesional y Analista Cuantitativo de Apuestas Deportivas. Tu objetivo no es "adivinar el ganador", sino encontrar "Value Bets" (Apuestas de Valor) reales.
 
@@ -275,16 +333,20 @@ DATOS CLAVE DEL PARTIDO:
 - Liga: ${code}
 - Fecha: ${date}
 
-CONTEXTO HISTÓRICO (RACHA RECIENTE):
+CONTEXTO HISTÓRICO (RACHA RECIENTE API):
 ${racha}
 
 HISTORIAL DE RENDIMIENTO EN TU BASE DE DATOS:
 ${historialBD}
 
+NUEVO - DATOS DE NICHO E H2H EXTRAÍDOS EN VIVO (WEB SCRAPING):
+Filtra y utiliza la siguiente información en bruto extraída de LiveScore (bajas, lesionados, tendencias H2H, alineaciones) para refinar tu análisis:
+${datosLiveScore}
+
 INSTRUCCIONES DE ANÁLISIS ESTRATÉGICO:
 1. MERCADOS ALTERNATIVOS: No te limites al 1X2 (Ganador). Evalúa rigurosamente mercados como: Over/Under de goles, Ambos Equipos Marcan (BTTS), Hándicap Asiático y Doble Oportunidad.
-2. ANÁLISIS TÁCTICO: Basa tu pick en cruce de estilos (ej. "el visitante juega al contragolpe y el local sufre con defensas altas").
-3. CRITERIO DE "NO BET": Si es un partido impredecible, de alto riesgo, o donde las cuotas de las casas de apuestas probablemente no tengan valor, tu recomendación DEBE ser OBLIGATORIAMENTE "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
+2. ANÁLISIS TÁCTICO: Basa tu pick en cruce de estilos, utilizando obligatoriamente los datos de lesionados o tendencias H2H proporcionados en el bloque de Web Scraping si los hay.
+3. CRITERIO DE "NO BET": Si es un partido impredecible o de alto riesgo, tu recomendación DEBE ser OBLIGATORIAMENTE "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
 4. GESTIÓN DE STAKE (Riesgo): Escala de 1 a 10. Solo usa Stake 8-10 si hay una ineficiencia del mercado abrumadora. Stake 1-3 para apuestas de cuota alta/riesgo alto.
 
 REQUISITOS DEL FORMATO DE SALIDA (JSON PURO):
@@ -293,7 +355,7 @@ Responde ÚNICAMENTE con un objeto JSON. No incluyas explicaciones fuera del JSO
   "pick": "Escribe aquí la selección de apuesta clara (Ej: Local DNB, Over 2.5, Empate). Si no es clara, pon 'PASAR / NO VALOR'",
   "confianza": "🟢, 🟡 o 🔴",
   "stake": (un número del 0 al 10),
-  "analisis": "Resumen táctico y estadístico de por qué esta apuesta tiene valor (max 300 caracteres).",
+  "analisis": "Resumen táctico y estadístico de por qué esta apuesta tiene valor (max 300 caracteres). Menciona las ausencias o datos H2H si son relevantes.",
   "marcador": "Resultado exacto más probable (Ej: 2-1).",
   "consejo": "Advertencia: ¿Qué factor específico del partido podría hacer que esta apuesta se pierda?"
 }`;
@@ -452,7 +514,7 @@ async function mostrarBanca(chatId) {
 
     historial.forEach(p => {
         if (p.estado === 'GANADA') {
-            saldo += (p.montoApostado * 0.85); // Calculamos beneficio en base a cuota promedio de 1.85
+            saldo += (p.montoApostado * 0.85); 
             ganadas++;
         }
         else if (p.estado === 'PERDIDA') {
@@ -513,5 +575,5 @@ function getNombreConfianza(simbolo) {
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => { 
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot V8.9.1 Online'); 
+    res.end('Bot V9.0 Online'); 
 }).listen(PORT);
