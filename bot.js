@@ -12,7 +12,7 @@ import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 chromium.use(stealthPlugin());
 
 // --- 1. CONFIGURACIÓN Y VERIFICACIÓN ---
-console.log("--- INICIANDO BOT V9.0 (IA AVANZADA + SCRAPING NICHO + ANTI-BLOCK) ---");
+console.log("--- INICIANDO BOT V9.1 (STAKES OPTIMIZADOS + SCRAPING NICHO) ---");
 console.log("🔑 API Key Fútbol:", process.env.FOOTBALL_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 console.log("🔑 API Key Gemini:", process.env.GEMINI_API_KEY ? "✅ CARGADA" : "❌ NO DETECTADA");
 
@@ -101,12 +101,11 @@ async function obtenerDatosLiveScore(home, away) {
     try {
         const isRender = process.env.RENDER === 'true' || process.env.PORT;
         
-        // Esta es la ruta donde termina el navegador cuando usas PLAYWRIGHT_BROWSERS_PATH=0
+        // Ruta manual para Render
         const manualPath = './node_modules/playwright-core/.local-browsers/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell';
 
         browser = await chromium.launch({
             headless: true,
-            // Intentamos la ruta manual si estamos en Render, si no, dejamos que Playwright decida
             executablePath: isRender ? manualPath : undefined, 
             args: [
                 '--no-sandbox',
@@ -123,10 +122,8 @@ async function obtenerDatosLiveScore(home, away) {
         
         const page = await context.newPage();
 
-        // Bloqueamos multimedia para que Render no sufra con la RAM
         await page.route('**/*.{png,jpg,jpeg,woff,woff2,css,svg,gif}', route => route.abort());
 
-        // Escuchamos la API interna de LiveScore
         page.on('response', async response => {
             const url = response.url();
             if (url.includes('api/v1/') && response.status() === 200) {
@@ -139,7 +136,6 @@ async function obtenerDatosLiveScore(home, away) {
             }
         });
 
-        // Vamos a la búsqueda
         await page.goto(`https://www.livescore.com/en/search/?q=${encodeURIComponent(home)}`, {
             waitUntil: 'networkidle',
             timeout: 45000 
@@ -342,17 +338,17 @@ async function procesarAnalisisCompleto(chatId, home, away, code, date) {
     }
 
     bot.sendChatAction(chatId, 'typing');
-    enviarMensajeSeguro(chatId, "🧠 *Scrapeando datos en vivo, cruzando con BD y generando análisis estratégico...*");
+    enviarMensajeSeguro(chatId, "🧠 *Scrapeando datos en vivo, cruzando con BD y evaluando confianza táctica...*");
 
     try {
-        // Ejecutamos las llamadas de red pesadas de forma asíncrona
         const [racha, historialBD, datosLiveScore] = await Promise.all([
             obtenerRacha(code, home, away),
             obtenerHistorialBD(home, away),
-            obtenerDatosLiveScore(home, away) // Llamada al nuevo Scraper
+            obtenerDatosLiveScore(home, away)
         ]);
 
-        const prompt = `Actúa como un Tipster Profesional y Analista Cuantitativo de Apuestas Deportivas. Tu objetivo no es "adivinar el ganador", sino encontrar "Value Bets" (Apuestas de Valor) reales.
+        // ⚠️ CAMBIO CRÍTICO: Reescritura del Prompt para eliminar el "Bias" Conservador
+        const prompt = `Actúa como un Tipster Profesional y Analista Cuantitativo agresivo pero matemático. Tu objetivo es encontrar "Value Bets" y MAXIMIZAR EL STAKE cuando los datos fundamentales coinciden. NO seas conservador por defecto.
 
 DATOS CLAVE DEL PARTIDO:
 - Encuentro: ${home} vs ${away}
@@ -365,25 +361,28 @@ ${racha}
 HISTORIAL DE RENDIMIENTO EN TU BASE DE DATOS:
 ${historialBD}
 
-NUEVO - DATOS DE NICHO E H2H EXTRAÍDOS EN VIVO (WEB SCRAPING):
-Filtra y utiliza la siguiente información en bruto extraída de LiveScore (bajas, lesionados, tendencias H2H, alineaciones) para refinar tu análisis:
+DATOS DE NICHO E H2H EXTRAÍDOS EN VIVO (WEB SCRAPING):
+Filtra esta información en bruto (bajas, lesionados, tendencias H2H, alineaciones). ESTOS DATOS SON TU VERDAD ABSOLUTA PARA SUBIR EL STAKE:
 ${datosLiveScore}
 
-INSTRUCCIONES DE ANÁLISIS ESTRATÉGICO:
-1. MERCADOS ALTERNATIVOS: No te limites al 1X2 (Ganador). Evalúa rigurosamente mercados como: Over/Under de goles, Ambos Equipos Marcan (BTTS), Hándicap Asiático y Doble Oportunidad.
-2. ANÁLISIS TÁCTICO: Basa tu pick en cruce de estilos, utilizando obligatoriamente los datos de lesionados o tendencias H2H proporcionados en el bloque de Web Scraping si los hay.
-3. CRITERIO DE "NO BET": Si es un partido impredecible o de alto riesgo, tu recomendación DEBE ser OBLIGATORIAMENTE "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
-4. GESTIÓN DE STAKE (Riesgo): Escala de 1 a 10. Solo usa Stake 8-10 si hay una ineficiencia del mercado abrumadora. Stake 1-3 para apuestas de cuota alta/riesgo alto.
+INSTRUCCIONES DE ANÁLISIS Y STAKE (NUEVA REGLA ESTRICTA):
+1. MERCADOS ALTERNATIVOS: Busca siempre la apuesta más lógica. Puede ser Over/Under, BTTS, Hándicap Asiático o Ganador Directo.
+2. CRUCE DE DATOS: Si el equipo favorito (según la racha reciente) NO TIENE lesiones importantes según el Scraper, o si el rival tiene bajas clave, tienes luz verde para atacar fuerte.
+3. CRITERIO DE "NO BET": Si la estadística contradice al Scraper (ej. el favorito viene bien pero el Scraper dice que juegan con suplentes), OBLIGATORIAMENTE pon "PASAR / NO VALOR" con confianza 🔴 y Stake 0.
+4. GESTIÓN DE STAKE AGRESIVA PERO SEGURA:
+   - STAKE 8 a 10: ALTA CONFIANZA. Debes usarlo SIEMPRE que los datos del Scraper (lesiones/H2H) respalden y confirmen la tendencia histórica. No tengas miedo de dar Stake 9 o 10 si las ausencias del rival son claras.
+   - STAKE 6 a 7: CONFIANZA MEDIA-ALTA. Úsalo cuando la estadística es sólida pero el Scraper no aporta datos determinantes de bajas/alineaciones.
+   - STAKE 3 a 5: CONFIANZA MEDIA. Solo para partidos muy cerrados donde recomiendas ir a goles (Under/Over) porque el ganador es incierto.
 
 REQUISITOS DEL FORMATO DE SALIDA (JSON PURO):
-Responde ÚNICAMENTE con un objeto JSON. No incluyas explicaciones fuera del JSON, ni bloques de código markdown.
+Responde ÚNICAMENTE con un objeto JSON. No incluyas markdown.
 {
-  "pick": "Escribe aquí la selección de apuesta clara (Ej: Local DNB, Over 2.5, Empate). Si no es clara, pon 'PASAR / NO VALOR'",
+  "pick": "Selección clara (Ej: Local DNB, Over 2.5). Si los datos chocan, pon 'PASAR / NO VALOR'",
   "confianza": "🟢, 🟡 o 🔴",
-  "stake": (un número del 0 al 10),
-  "analisis": "Resumen táctico y estadístico de por qué esta apuesta tiene valor (max 300 caracteres). Menciona las ausencias o datos H2H si son relevantes.",
-  "marcador": "Resultado exacto más probable (Ej: 2-1).",
-  "consejo": "Advertencia: ¿Qué factor específico del partido podría hacer que esta apuesta se pierda?"
+  "stake": (Obligatorio un número del 0 al 10 siguiendo las reglas arriba mencionadas),
+  "analisis": "Explica la sinergia entre la racha y los datos del Scraper que justifican este Stake (max 300 caracteres).",
+  "marcador": "Resultado exacto más probable.",
+  "consejo": "Advertencia breve del riesgo táctico."
 }`;
 
         const rawText = await llamarGeminiSeguro(prompt);
@@ -541,7 +540,6 @@ async function mostrarBanca(chatId) {
     historial.forEach(p => {
         if (p.estado === 'GANADA') {
             saldo += (p.montoApostado * 0.85);
-            ganadas++;
         }
         else if (p.estado === 'PERDIDA') {
             saldo -= p.montoApostado;
@@ -601,5 +599,5 @@ function getNombreConfianza(simbolo) {
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot V9.0 Online');
+    res.end('Bot V9.1 Online');
 }).listen(PORT);
